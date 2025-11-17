@@ -210,9 +210,9 @@ def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.
     return fig, spot, expiry_date, regime, dpi, gamma_flip, gw_calls, gw_puts
 
 
-# ---------------------- Streamlit UI (invariata) ----------------------
+# ---------------------- Streamlit UI (PERFETTA COME LA VUOI TU) ----------------------
 st.title("GEX Focused Pro v18.0")
-st.markdown("### By Pure Energy 2025*")
+st.markdown("### By Pure Energy 2025")
 
 col1, col2 = st.columns([1, 2])
 
@@ -251,16 +251,19 @@ with col1:
             selected_expiry = exp_options[selected_label]
             st.success(f"Scadenza selezionata: **{datetime.strptime(selected_expiry, '%Y-%m-%d').strftime('%d %B %Y')}**")
 
-    range_pct = st.slider("Range ±%", 10, 50, 25, help="Range di strike da analizzare")
-    min_oi_ratio = st.slider("Min OI % del max", 10, 80, 40, help="Filtra contratti con OI basso") / 100
-    dist_min = st.slider("Distanza min % tra Walls", 1, 10, 3, help="Distanza minima tra Gamma Walls") / 100
+    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
+    # ECCO TUTTO CIÒ CHE HAI CHIESTO:
+    range_pct = st.slider("Range ±%", 10, 60, 20, help="Range di strike da analizzare")                    # 20%
+    min_oi_ratio = st.slider("Min OI % del max", 5, 80, 20, help="Filtra contratti con OI basso") / 100   # 20%
+    dist_min = st.slider("Distanza min % tra Walls", 1, 15, 2, help="Distanza minima tra Gamma Walls") / 100   # 2%
 
     st.markdown("#### Segno GEX (Dealer Positioning)")
     col_sign1, col_sign2 = st.columns(2)
     with col_sign1:
-        call_sign = 1 if st.checkbox("CALL vendute dai dealer (+)", value=True) else -1
+        call_sign = 1 if st.checkbox("CALL vendute dai dealer (+)", value=False) else -1   # SPENTA
     with col_sign2:
-        put_sign = 1 if st.checkbox("PUT vendute dai dealer (+)", value=False) else -1
+        put_sign = 1 if st.checkbox("PUT vendute dai dealer (+)", value=False) else -1    # SPENTA
+    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
 
     run = st.button("Calcola GEX Focused v18", type="primary", use_container_width=True, disabled=not selected_expiry)
 
@@ -275,7 +278,7 @@ with col2:
                 plt.close(fig)
 
                 buf = BytesIO()
-                fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+                fig.savefig(buf, format="png", dpi=180, bbox_inches="tight")
                 buf.seek(0)
                 b64 = base64.b64encode(buf.read()).decode()
                 href = f'<a href="data:image/png;base64,{b64}" download="{symbol}_GEX_{selected_expiry}_v18.png">Scarica Report PNG (v18)</a>'
