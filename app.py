@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Focused Pro v17.8 | Streamlit Web App
+GEX Focused Pro v17.9 | Streamlit Web App
 Gamma Exposure + DPI + Gamma Flip + Gamma Walls
++ Selezione 1ª o 2ª scadenza
 """
 
 import streamlit as st
@@ -36,8 +37,8 @@ def days_to_expiry(exp):
     return max((e - now).total_seconds() / 86400, 1.0)
 
 # ---------------------- Core Function ----------------------
-@st.cache_data(ttl=300)  # Cache 5 minuti
-def compute_gex_dpi_focused(symbol, range_pct=25.0, min_oi_ratio=0.4, dist_min=0.03, call_sign=1, put_sign=-1):
+@st.cache_data(ttl=300)
+def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.4, dist_min=0.03, call_sign=1, put_sign=-1):
     CONTRACT_MULTIPLIER = 100.0
     RISK_FREE = 0.05
 
@@ -48,14 +49,10 @@ def compute_gex_dpi_focused(symbol, range_pct=25.0, min_oi_ratio=0.4, dist_min=0
     except:
         spot = float(tkdata.history(period="5d")["Close"].dropna().iloc[-1])
 
-    expirations = tkdata.options
-    if not expirations:
-        raise RuntimeError("Nessuna scadenza disponibile per questo ticker.")
-    expiry = expirations[0]
-    T_days = days_to_expiry(expiry)
+    T_days = days_to_expiry(expiry_date)
     T = T_days / 365.0
 
-    chain = tkdata.option_chain(expiry)
+    chain = tkdata.option_chain(expiry_date)
     calls, puts = chain.calls.copy(), chain.puts.copy()
 
     for df in (calls, puts):
@@ -137,7 +134,7 @@ def compute_gex_dpi_focused(symbol, range_pct=25.0, min_oi_ratio=0.4, dist_min=0
 
     report_text = (
         "──────────────────────────────────────────────\n"
-        f"{symbol} — Focused GEX Report ({expiry})\n"
+        f"{symbol} — Focused GEX Report ({expiry_date})\n"
         "──────────────────────────────────────────────\n\n"
         f"Gamma Regime: {regime_label} | DPI: {dpi:.1f} % | Flip: {flip_str} $\n"
         f"{bias_label}\n\n"
@@ -192,25 +189,58 @@ def compute_gex_dpi_focused(symbol, range_pct=25.0, min_oi_ratio=0.4, dist_min=0
 
     ax.set_xlabel("Strike")
     ax.set_ylabel("Open Interest (contratti)")
-    ax.set_title(f"{symbol} — Focused GEX Report ({expiry})", loc="right", color="#444444", fontsize=12)
+    ax.set_title(f"{symbol} — Focused GEX Report ({expiry_date})", loc="right", color="#444444", fontsize=12)
     ax.legend(loc="upper right")
     ax2.legend(loc="upper left", frameon=False)
+    ax.text(0.98, 0.02, "GEX Focused Pro v17.9", transform=ax.transAxes, ha="right", va="bottom", fontsize=17, color="#555555", alpha=0.35, fontstyle="italic", fontweight="bold")
 
-    ax.text(0.98, 0.02, "GEX Focused Pro", transform=ax.transAxes, ha="right", va="bottom", fontsize=17, color="#555555", alpha=0.35, fontstyle="italic", fontweight="bold")
+    return fig, spot, expiry_date, regime, dpi, gamma_flip, gw_calls, gw_puts
 
-    return fig, spot, expiry, regime, dpi, gamma_flip, gw_calls, gw_puts
 
 # ---------------------- Streamlit UI ----------------------
-st.title("GEX Focused Pro v17.8")
+st.title("GEX Focused Pro v17.9")
 st.markdown("### Gamma Exposure + DPI + Gamma Flip + Gamma Walls")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("Parametri")
-    symbol = st.text_input("Ticker", value="SPY", help="Es. SPY, QQQ, TSLA, NVDA").upper().strip()
+    symbol = st.text_input("Ticker", value="SPY", help="Es. SPY, QQQ, TSLA, NVDA, IWM").upper().strip()
+
+    # --- Caricamento scadenze con cache ---
+    @st.cache_data(ttl=600)
+    def get_expirations(sym):
+        try:
+            return yf.Ticker(sym).options
+        except:
+            return []
+
+    expirations = []
+    selected_expiry = None
+    if symbol:
+        with st.spinner("Caricamento scadenze opzioni..."):
+            expirations = get_expirations(symbol)
+
+        if not expirations:
+            st.error("Nessuna scadenza opzioni disponibile per questo ticker.")
+        else:
+            exp_options = {}
+            for i, exp in enumerate(expirations[:2]):
+                date_fmt = datetime.strptime(exp, "%Y-%m-%d").strftime("%d %b %Y")
+                label = f"1ª scadenza — {date_fmt} (più vicina)" if i == 0 else f"2ª scadenza — {date_fmt}"
+                exp_options[label] = exp
+
+            selected_label = st.selectbox(
+                "Scadenza da analizzare",
+                options=list(exp_options.keys()),
+                index=0,
+                help="Scegli tra weekly (1ª) e monthly (2ª)"
+            )
+            selected_expiry = exp_options[selected_label]
+            st.success(f"Scadenza selezionata: **{datetime.strptime(selected_expiry, '%Y-%m-%d').strftime('%d %B %Y')}**")
+
     range_pct = st.slider("Range ±%", 10, 50, 25, help="Range di strike da analizzare")
-    min_oi_ratio = st.slider("Min OI % del max", 10, 80, 40, help="Filtra strike con OI basso") / 100
+    min_oi_ratio = st.slider("Min OI % del max", 10, 80, 40, help="Filtra contratti con OI basso") / 100
     dist_min = st.slider("Distanza min % tra Walls", 1, 10, 3, help="Distanza minima tra Gamma Walls") / 100
 
     st.markdown("#### Segno GEX (Dealer Positioning)")
@@ -220,14 +250,14 @@ with col1:
     with col_sign2:
         put_sign = 1 if st.checkbox("PUT vendute dai dealer (+)", value=False) else -1
 
-    run = st.button("Calcola GEX Focused", type="primary", use_container_width=True)
+    run = st.button("Calcola GEX Focused", type="primary", use_container_width=True, disabled=not selected_expiry)
 
 with col2:
-    if run:
-        with st.spinner(f"Analisi {symbol} in corso..."):
+    if run and selected_expiry:
+        with st.spinner(f"Analisi {symbol} - {selected_expiry} in corso..."):
             try:
                 fig, spot, expiry, regime, dpi, gamma_flip, gw_calls, gw_puts = compute_gex_dpi_focused(
-                    symbol, range_pct, min_oi_ratio, dist_min, call_sign, put_sign
+                    symbol, selected_expiry, range_pct, min_oi_ratio, dist_min, call_sign, put_sign
                 )
                 st.pyplot(fig)
                 plt.close(fig)
@@ -237,8 +267,10 @@ with col2:
                 fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
                 buf.seek(0)
                 b64 = base64.b64encode(buf.read()).decode()
-                href = f'<a href="data:image/png;base64,{b64}" download="{symbol}_GEX_report.png">Scarica Report PNG</a>'
+                href = f'<a href="data:image/png;base64,{b64}" download="{symbol}_GEX_{selected_expiry}.png">Scarica Report PNG</a>'
                 st.markdown(href, unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"Errore: {str(e)}")
+                st.error(f"Errore durante il calcolo: {str(e)}")
+    else:
+        st.info("Inserisci un ticker valido e premi **Calcola GEX Focused**")
