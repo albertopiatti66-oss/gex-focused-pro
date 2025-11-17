@@ -206,7 +206,7 @@ def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.
 
 # ---------------------- UI ----------------------
 st.title("GEX Focused Pro v18.4")
-st.markdown("### Il grafico più bello e operativo d'Italia – 17 novembre 2025")
+st.markdown("### Grafico TOP 2025")
 
 col1, col2 = st.columns([1, 2])
 
