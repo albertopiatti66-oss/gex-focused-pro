@@ -211,8 +211,8 @@ def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.
 
 
 # ---------------------- Streamlit UI (invariata) ----------------------
-st.title("GEX Focused Pro v18.0 — Gamma Walls FIXATI")
-st.markdown("### Gamma Exposure + DPI + Gamma Flip + **Gamma Walls reali basati su MAX OI**")
+st.title("GEX Focused Pro v18.0")
+st.markdown("### By Pure Energy 2025*")
 
 col1, col2 = st.columns([1, 2])
 
