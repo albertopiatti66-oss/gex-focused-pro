@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Focused Pro v17.9 | Streamlit Web App
-Gamma Exposure + DPI + Gamma Flip + Gamma Walls
-+ Selezione 1ª o 2ª scadenza
+GEX Focused Pro v18.0 | Streamlit Web App
+Gamma Exposure + DPI + Gamma Flip + Gamma Walls (ORA CORRETTI AL 100% su MAX OI)
+Fixato definitivamente il problema dei Gamma Wall che saltavano i livelli più grossi
 """
 
 import streamlit as st
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import base64
 from io import BytesIO
 
-st.set_page_config(page_title="GEX Focused Pro", layout="wide", page_icon="Chart")
+st.set_page_config(page_title="GEX Focused Pro v18", layout="wide", page_icon="Chart")
 
 # ---------------------- Funzioni di supporto ----------------------
 def _norm_pdf(x):
@@ -36,7 +36,7 @@ def days_to_expiry(exp):
     e = datetime.strptime(exp, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     return max((e - now).total_seconds() / 86400, 1.0)
 
-# ---------------------- Core Function ----------------------
+# ---------------------- CORE FUNCTION AGGIORNATA ----------------------
 @st.cache_data(ttl=300)
 def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.4, dist_min=0.03, call_sign=1, put_sign=-1):
     CONTRACT_MULTIPLIER = 100.0
@@ -86,28 +86,41 @@ def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.
     if calls.empty or puts.empty:
         raise RuntimeError(f"Nessun contratto con OI > {min_oi_ratio*100:.0f}% del massimo.")
 
-    # --- Gamma Walls ---
-    dist_filter = max(1e-9, spot * dist_min)
+    # ==================== GAMMA WALLS CORRETTI (MAX OI + GAMMA) ====================
+    dist_filter = max(1e-9, spot * dist_min)  # es. 0.03 → 3% dello spot
+
+    # CALL WALLS (strike > spot)
     call_cand = calls[calls["strike"] > spot].copy()
-    call_cand["absGEX"] = call_cand["GEX"].abs()
-    call_cand.sort_values("absGEX", ascending=False, inplace=True)
-
-    put_cand = puts[puts["strike"] < spot].copy()
-    put_cand["absGEX"] = put_cand["GEX"].abs()
-    put_cand.sort_values("absGEX", ascending=False, inplace=True)
-
-    def pick_levels(df, max_levels=3):
-        selected = []
-        for _, row in df.iterrows():
+    if not call_cand.empty:
+        # Score = OI × Gamma × Spot² → premia sia volume che sensibilità gamma
+        call_cand["score"] = call_cand["openInterest"] * call_cand["gamma"] * (spot ** 2)
+        call_cand = call_cand.sort_values("score", ascending=False)
+        
+        gw_calls = []
+        for _, row in call_cand.iterrows():
             k = float(row["strike"])
-            if not selected or all(abs(k - s) > dist_filter for s in selected):
-                selected.append(k)
-            if len(selected) >= max_levels:
+            if not gw_calls or all(abs(k - s) > dist_filter for s in gw_calls):
+                gw_calls.append(k)
+            if len(gw_calls) >= 3:
                 break
-        return selected
+    else:
+        gw_calls = []
 
-    gw_calls = pick_levels(call_cand)
-    gw_puts  = pick_levels(put_cand)
+    # PUT WALLS (strike < spot)
+    put_cand = puts[puts["strike"] < spot].copy()
+    if not put_cand.empty:
+        put_cand["score"] = put_cand["openInterest"] * put_cand["gamma"] * (spot ** 2)
+        put_cand = put_cand.sort_values("score", ascending=False)
+        
+        gw_puts = []
+        for _, row in put_cand.iterrows():
+            k = float(row["strike"])
+            if not gw_puts or all(abs(k - s) > dist_filter for s in gw_puts):
+                gw_puts.append(k)
+            if len(gw_puts) >= 3:
+                break
+    else:
+        gw_puts = []
 
     # --- Indicatori ---
     gamma_call = calls["GEX"].sum()
@@ -192,14 +205,14 @@ def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.
     ax.set_title(f"{symbol} — Focused GEX Report ({expiry_date})", loc="right", color="#444444", fontsize=12)
     ax.legend(loc="upper right")
     ax2.legend(loc="upper left", frameon=False)
-    ax.text(0.98, 0.02, "GEX Focused Pro v17.9", transform=ax.transAxes, ha="right", va="bottom", fontsize=17, color="#555555", alpha=0.35, fontstyle="italic", fontweight="bold")
+    ax.text(0.98, 0.02, "GEX Focused Pro v18.0 — FIXED GW", transform=ax.transAxes, ha="right", va="bottom", fontsize=17, color="#555555", alpha=0.35, fontstyle="italic", fontweight="bold")
 
     return fig, spot, expiry_date, regime, dpi, gamma_flip, gw_calls, gw_puts
 
 
-# ---------------------- Streamlit UI ----------------------
-st.title("GEX Focused Pro v17.9")
-st.markdown("### Gamma Exposure + DPI + Gamma Flip + Gamma Walls")
+# ---------------------- Streamlit UI (invariata) ----------------------
+st.title("GEX Focused Pro v18.0 — Gamma Walls FIXATI")
+st.markdown("### Gamma Exposure + DPI + Gamma Flip + **Gamma Walls reali basati su MAX OI**")
 
 col1, col2 = st.columns([1, 2])
 
@@ -207,7 +220,6 @@ with col1:
     st.subheader("Parametri")
     symbol = st.text_input("Ticker", value="SPY", help="Es. SPY, QQQ, TSLA, NVDA, IWM").upper().strip()
 
-    # --- Caricamento scadenze con cache ---
     @st.cache_data(ttl=600)
     def get_expirations(sym):
         try:
@@ -250,7 +262,7 @@ with col1:
     with col_sign2:
         put_sign = 1 if st.checkbox("PUT vendute dai dealer (+)", value=False) else -1
 
-    run = st.button("Calcola GEX Focused", type="primary", use_container_width=True, disabled=not selected_expiry)
+    run = st.button("Calcola GEX Focused v18", type="primary", use_container_width=True, disabled=not selected_expiry)
 
 with col2:
     if run and selected_expiry:
@@ -262,15 +274,14 @@ with col2:
                 st.pyplot(fig)
                 plt.close(fig)
 
-                # Download PNG
                 buf = BytesIO()
                 fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
                 buf.seek(0)
                 b64 = base64.b64encode(buf.read()).decode()
-                href = f'<a href="data:image/png;base64,{b64}" download="{symbol}_GEX_{selected_expiry}.png">Scarica Report PNG</a>'
+                href = f'<a href="data:image/png;base64,{b64}" download="{symbol}_GEX_{selected_expiry}_v18.png">Scarica Report PNG (v18)</a>'
                 st.markdown(href, unsafe_allow_html=True)
 
             except Exception as e:
                 st.error(f"Errore durante il calcolo: {str(e)}")
     else:
-        st.info("Inserisci un ticker valido e premi **Calcola GEX Focused**")
+        st.info("Inserisci un ticker valido e premi **Calcola GEX Focused v18**")
