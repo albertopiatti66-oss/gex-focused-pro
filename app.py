@@ -205,7 +205,7 @@ def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.
     ax.set_title(f"{symbol} — Focused GEX Report ({expiry_date})", loc="right", color="#444444", fontsize=12)
     ax.legend(loc="upper right")
     ax2.legend(loc="upper left", frameon=False)
-    ax.text(0.98, 0.02, "GEX Focused Pro v18.0 — FIXED GW", transform=ax.transAxes, ha="right", va="bottom", fontsize=17, color="#555555", alpha=0.35, fontstyle="italic", fontweight="bold")
+    ax.text(0.98, 0.02, "GEX Focused Pro v18.0", transform=ax.transAxes, ha="right", va="bottom", fontsize=17, color="#555555", alpha=0.35, fontstyle="italic", fontweight="bold")
 
     return fig, spot, expiry_date, regime, dpi, gamma_flip, gw_calls, gw_puts
 
