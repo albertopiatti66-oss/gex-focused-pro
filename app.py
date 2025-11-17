@@ -87,40 +87,33 @@ def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.
         raise RuntimeError(f"Nessun contratto con OI > {min_oi_ratio*100:.0f}% del massimo.")
 
     # ==================== GAMMA WALLS CORRETTI (MAX OI + GAMMA) ====================
-    dist_filter = max(1e-9, spot * dist_min)  # es. 0.03 → 3% dello spot
+    dist_filter = max(1e-9, spot * dist_min)
 
-    # CALL WALLS (strike > spot)
+    # CALL WALLS
     call_cand = calls[calls["strike"] > spot].copy()
+    gw_calls = []
     if not call_cand.empty:
-        # Score = OI × Gamma × Spot² → premia sia volume che sensibilità gamma
         call_cand["score"] = call_cand["openInterest"] * call_cand["gamma"] * (spot ** 2)
         call_cand = call_cand.sort_values("score", ascending=False)
-        
-        gw_calls = []
         for _, row in call_cand.iterrows():
             k = float(row["strike"])
             if not gw_calls or all(abs(k - s) > dist_filter for s in gw_calls):
                 gw_calls.append(k)
             if len(gw_calls) >= 3:
                 break
-    else:
-        gw_calls = []
 
-    # PUT WALLS (strike < spot)
+    # PUT WALLS
     put_cand = puts[puts["strike"] < spot].copy()
+    gw_puts = []
     if not put_cand.empty:
         put_cand["score"] = put_cand["openInterest"] * put_cand["gamma"] * (spot ** 2)
         put_cand = put_cand.sort_values("score", ascending=False)
-        
-        gw_puts = []
         for _, row in put_cand.iterrows():
             k = float(row["strike"])
             if not gw_puts or all(abs(k - s) > dist_filter for s in gw_puts):
                 gw_puts.append(k)
             if len(gw_puts) >= 3:
                 break
-    else:
-        gw_puts = []
 
     # --- Indicatori ---
     gamma_call = calls["GEX"].sum()
@@ -210,9 +203,9 @@ def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.
     return fig, spot, expiry_date, regime, dpi, gamma_flip, gw_calls, gw_puts
 
 
-# ---------------------- Streamlit UI (invariata) ----------------------
+# ---------------------- Streamlit UI (con le tue modifiche) ----------------------
 st.title("GEX Focused Pro v18.0")
-st.markdown("### By Pure Energy 2025**")
+st.markdown("### By Pure Energy 2025")
 
 col1, col2 = st.columns([1, 2])
 
@@ -251,16 +244,16 @@ with col1:
             selected_expiry = exp_options[selected_label]
             st.success(f"Scadenza selezionata: **{datetime.strptime(selected_expiry, '%Y-%m-%d').strftime('%d %B %Y')}**")
 
-    range_pct = st.slider("Range ±%", 10, 50, 25, help="Range di strike da analizzare")
-    min_oi_ratio = st.slider("Min OI % del max", 10, 80, 40, help="Filtra contratti con OI basso") / 100
-    dist_min = st.slider("Distanza min % tra Walls", 1, 10, 3, help="Distanza minima tra Gamma Walls") / 100
+    # ==== MODIFICHE RICHIESTE ====
+    range_pct = st.slider("Range ±%", 10, 50, 20, help="Range di strike da analizzare")           # DEFAULT 20
+    min_oi_ratio = st.slider("Min OI % del max", 10, 80, 20, help="Filtra contratti con OI basso") / 100   # DEFAULT 20
 
     st.markdown("#### Segno GEX (Dealer Positioning)")
     col_sign1, col_sign2 = st.columns(2)
     with col_sign1:
-        call_sign = 1 if st.checkbox("CALL vendute dai dealer (+)", value=True) else -1
+        call_sign = 1 if st.checkbox("CALL vendute dai dealer (+)", value=False) else -1   # DEFAULT SPENTO
     with col_sign2:
-        put_sign = 1 if st.checkbox("PUT vendute dai dealer (+)", value=False) else -1
+        put_sign = 1 if st.checkbox("PUT vendute dai dealer (+)", value=False) else -1    # DEFAULT SPENTO
 
     run = st.button("Calcola GEX Focused v18", type="primary", use_container_width=True, disabled=not selected_expiry)
 
@@ -269,7 +262,7 @@ with col2:
         with st.spinner(f"Analisi {symbol} - {selected_expiry} in corso..."):
             try:
                 fig, spot, expiry, regime, dpi, gamma_flip, gw_calls, gw_puts = compute_gex_dpi_focused(
-                    symbol, selected_expiry, range_pct, min_oi_ratio, dist_min, call_sign, put_sign
+                    symbol, selected_expiry, range_pct, min_oi_ratio, 0.03, call_sign, put_sign
                 )
                 st.pyplot(fig)
                 plt.close(fig)
