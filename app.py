@@ -204,8 +204,8 @@ def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.
 
 
 # ---------------------- UI ----------------------
-st.title("GEX Focused Pro v18.3 — COME PIACE A TE")
-st.markdown("### Gamma Walls perfetti + Strategia 2025 + Grafico come lo vuoi tu")
+st.title("GEX Focused Pro v18.3")
+st.markdown("### By Pure Energy 2025")
 
 col1, col2 = st.columns([1, 2])
 
