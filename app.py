@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Focused Pro v18.2 (Final Explicit Edition)
-Features:
-- Hybrid Dealer Model (Default)
-- Vectorized Math (Fast)
-- High Contrast Visuals
-- Explicit AI Market Analysis (Rialzo/Ribasso/Trappola)
+GEX Focused Pro v18.3 (Visual Fixes)
+- Watermark added
+- Text Report contrast fixed (White background forced)
+- Y-Axis Label emphasized
 """
 
 import streamlit as st
@@ -19,7 +17,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Pro v18.2", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Pro v18.3", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -171,7 +169,7 @@ def find_zero_crossing(df, spot):
         return None
 
 def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
-    """Genera report esplicito: Scommessa Rialzo/Ribasso."""
+    """Genera report esplicito con correzione per leggibilità."""
     
     tot_gex = data['total_gex']
     net_bias = data['net_gamma_bias']
@@ -257,23 +255,25 @@ def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
     cw_txt = f"{int(cw)}" if cw != "N/A" else "-"
     pw_txt = f"{int(pw)}" if pw != "N/A" else "-"
 
+    # HTML WRAPPER: Sfondo bianco forzato per leggibilità
     html = f"""
-    <div style="font-family: sans-serif; color: #333;">
-        <div style="display: flex; justify-content: space-between; font-size: 13px; color: #555; margin-bottom: 10px; border-bottom: 1px solid #ddd; padding-bottom: 5px;">
+    <div style="font-family: sans-serif; background-color: white; color: black; padding: 20px; border-radius: 10px; border: 1px solid #ccc;">
+        
+        <div style="display: flex; justify-content: space-between; font-size: 13px; color: #333; margin-bottom: 10px; border-bottom: 1px solid #ddd; padding-bottom: 5px;">
             <span>Spot: <strong>{spot:.2f}</strong></span>
             <span>Regime: <strong>{regime_status}</strong></span>
             <span>Bias: <strong>{bias_desc}</strong></span>
         </div>
         
-        <div style="font-size: 13px; margin-bottom: 10px;">
+        <div style="font-size: 13px; margin-bottom: 10px; color: #333;">
             <strong>Analisi Livelli:</strong> {flip_analysis}<br>
             <span style="color: #0d47a1;">Resistenza Call: <strong>{cw_txt}</strong></span> | 
             <span style="color: #e65100;">Supporto Put: <strong>{pw_txt}</strong></span>
         </div>
 
         <div style="background-color: {colore_sintesi}; padding: 15px; border-radius: 8px; border-left: 6px solid {bordino}; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-            <h3 style="margin: 0; margin-bottom: 5px; color: #222; font-size: 18px;">{scommessa}</h3>
-            <p style="font-size: 14px; margin: 0; color: #444;">{dettaglio}</p>
+            <h3 style="margin: 0; margin-bottom: 5px; color: #000; font-size: 18px;">{scommessa}</h3>
+            <p style="font-size: 14px; margin: 0; color: #222;">{dettaglio}</p>
         </div>
     </div>
     """
@@ -351,11 +351,19 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
         ax.text(w, val - y_offset, f"P {int(w)}", color="#e65100", fontsize=9, fontweight='bold', 
                 ha='center', va='top', bbox=bbox_props, zorder=20)
 
+    # 6. ASSI E WATERMARK (FIX RICHIESTI)
     ax.set_xlabel("Strike")
-    ax.set_ylabel("Open Interest")
+    # FIX: Etichetta Y-SX in grassetto e più grande
+    ax.set_ylabel("Open Interest", fontsize=11, fontweight='bold', color="#444")
+    
     ax2.set_ylabel("Gamma Exposure")
     ax2.axhline(0, color="grey", lw=0.5)
     
+    # FIX: Watermark in basso a destra
+    ax.text(0.99, 0.02, "GEX Focused Pro v18.3", transform=ax.transAxes, 
+            ha="right", va="bottom", fontsize=14, color="#999999", 
+            fontweight="bold", alpha=0.5)
+
     plt.title(f"{symbol} GEX Matrix | {expiry}", fontsize=12, pad=10)
     plt.tight_layout()
     
@@ -365,7 +373,7 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Pro v18.2 Explicit")
+st.title("⚡ GEX Pro v18.3 Explicit")
 
 col1, col2 = st.columns([1, 2])
 
@@ -416,7 +424,7 @@ with col2:
                     fig, c_walls, p_walls = plot_dashboard(symbol, data_res, spot, sel_exp, dist_min)
                     st.pyplot(fig)
                     
-                    # Report Esplicito
+                    # Report Esplicito (con Fix Leggibilità)
                     html_rep = generate_detailed_report(symbol, spot, data_res, c_walls, p_walls)
                     st.markdown(html_rep, unsafe_allow_html=True)
                     
@@ -424,3 +432,4 @@ with col2:
                     buf = BytesIO()
                     fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
                     st.download_button("💾 Salva Grafico", buf.getvalue(), f"GEX_{symbol}.png", "image/png")
+                 
