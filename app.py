@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Focused Pro v18.3 (Visual Fixes)
-- Watermark added
-- Text Report contrast fixed (White background forced)
-- Y-Axis Label emphasized
+GEX Focused Pro v18.4 (Fixed Legend & Report)
+- Re-added Chart Legend (Upper Left)
+- Fixed HTML Report rendering
+- Watermark & High Contrast kept
 """
 
 import streamlit as st
@@ -12,12 +12,14 @@ import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from scipy.stats import norm
 from datetime import datetime, timezone
 from io import BytesIO
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Pro v18.3", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Pro v18.4", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -140,23 +142,18 @@ def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=
     }, None
 
 # -----------------------------------------------------------------------------
-# 2. SISTEMA DI REPORTISTICA AVANZATO (ANALISI DIRETTA)
+# 2. SISTEMA DI REPORTISTICA AVANZATO
 # -----------------------------------------------------------------------------
 
 def find_zero_crossing(df, spot):
-    """Trova il Flip visuale (Zero Crossing) più vicino allo spot."""
     try:
         df = df.sort_values("strike")
         sign_change = ((df["GEX"] > 0) != (df["GEX"].shift(1) > 0)) & (~df["GEX"].shift(1).isna())
         crossings = df[sign_change]
-        
         if crossings.empty: return None
-            
         crossings = crossings.copy()
         crossings["dist"] = abs(crossings["strike"] - spot)
         nearest_flip = crossings.sort_values("dist").iloc[0]["strike"]
-        
-        # Interpolazione per precisione
         idx = df[df["strike"] == nearest_flip].index[0]
         prev_idx = idx - 1
         if prev_idx >= 0:
@@ -169,29 +166,20 @@ def find_zero_crossing(df, spot):
         return None
 
 def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
-    """Genera report esplicito con correzione per leggibilità."""
-    
     tot_gex = data['total_gex']
     net_bias = data['net_gamma_bias']
     global_flip = data['gamma_flip']
     gex_df = data['gex_by_strike']
     
-    # Flip Visivo
     local_flip = find_zero_crossing(gex_df, spot)
     effective_flip = local_flip if local_flip else global_flip
     
-    # A. Regime & Bias
     regime_status = "LONG GAMMA" if tot_gex > 0 else "SHORT GAMMA"
     
-    if net_bias > 40:
-        bias_desc = f"Dominanza Call (**{net_bias:.1f}%**)."
-    elif net_bias < -40:
-        bias_desc = f"Dominanza Put (**{abs(net_bias):.1f}%**)."
-    else:
-        bias_desc = f"Neutrale ({net_bias:.1f}%)."
+    if net_bias > 40: bias_desc = f"Dominanza Call (**{net_bias:.1f}%**)."
+    elif net_bias < -40: bias_desc = f"Dominanza Put (**{abs(net_bias):.1f}%**)."
+    else: bias_desc = f"Neutrale ({net_bias:.1f}%)."
 
-    # B. Analisi Zona (Safe vs Danger)
-    flip_analysis = ""
     safe_zone = False
     if effective_flip:
         if spot > effective_flip:
@@ -204,13 +192,11 @@ def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
     else:
         flip_analysis = "Nessun Flip chiaro."
 
-    # C. SINTESI ESPLICITA (Logica Direzionale)
     scommessa = ""
     colore_sintesi = "#ffffff"
     bordino = "grey"
     icona = ""
 
-    # Logica Decisionale
     if net_bias > 20:
         direzione_base = "SCOMMETTE AL RIALZO"
         icona = "📈"
@@ -221,56 +207,49 @@ def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
         direzione_base = "È LATERALE / INDECISO"
         icona = "⚖️"
 
-    # Analisi Contesto
     if safe_zone and tot_gex > 0:
         if net_bias > 0:
             scommessa = f"{icona} Il mercato {direzione_base}"
             dettaglio = "Contesto **Favorevole**: Siamo in Safe Zone con Dealer 'ammortizzatori'."
-            colore_sintesi = "#e8f5e9" # Verde
+            colore_sintesi = "#e8f5e9"
             bordino = "green"
         else:
             scommessa = "⚠️ Il mercato è CAUTO (Copertura)"
-            dettaglio = "Bias Put presente ma il prezzo tiene la Safe Zone. Possibile rimbalzo (Pain Trade)."
-            colore_sintesi = "#fff3e0" # Arancio
+            dettaglio = "Bias Put presente ma il prezzo tiene la Safe Zone. Possibile rimbalzo."
+            colore_sintesi = "#fff3e0"
             bordino = "orange"
-
     elif not safe_zone:
         if net_bias < 0:
             scommessa = f"{icona} Il mercato {direzione_base}"
             dettaglio = "Contesto **Critico**: Siamo sotto il Flip e i Dealer accelerano i ribassi."
-            colore_sintesi = "#ffebee" # Rosso
+            colore_sintesi = "#ffebee"
             bordino = "red"
         else:
             scommessa = "⚠️ Il mercato è INTRAPPOLATO (Bull Trap)"
             dettaglio = f"Tante Call aperte ma prezzo sotto il Flip ({effective_flip:.0f}). Se non recupera, liquidano le Call."
-            colore_sintesi = "#ffccbc" # Rosso scuro
+            colore_sintesi = "#ffccbc"
             bordino = "darkred"
     else:
         scommessa = f"{icona} Il mercato {direzione_base}"
         dettaglio = "Situazione transitoria."
 
-    # Muri Principali
     cw = min([w for w in call_walls if w > spot], default="N/A")
     pw = max([w for w in put_walls if w < spot], default="N/A")
     cw_txt = f"{int(cw)}" if cw != "N/A" else "-"
     pw_txt = f"{int(pw)}" if pw != "N/A" else "-"
 
-    # HTML WRAPPER: Sfondo bianco forzato per leggibilità
     html = f"""
     <div style="font-family: sans-serif; background-color: white; color: black; padding: 20px; border-radius: 10px; border: 1px solid #ccc;">
-        
         <div style="display: flex; justify-content: space-between; font-size: 13px; color: #333; margin-bottom: 10px; border-bottom: 1px solid #ddd; padding-bottom: 5px;">
             <span>Spot: <strong>{spot:.2f}</strong></span>
             <span>Regime: <strong>{regime_status}</strong></span>
             <span>Bias: <strong>{bias_desc}</strong></span>
         </div>
-        
         <div style="font-size: 13px; margin-bottom: 10px; color: #333;">
             <strong>Analisi Livelli:</strong> {flip_analysis}<br>
             <span style="color: #0d47a1;">Resistenza Call: <strong>{cw_txt}</strong></span> | 
             <span style="color: #e65100;">Supporto Put: <strong>{pw_txt}</strong></span>
         </div>
-
         <div style="background-color: {colore_sintesi}; padding: 15px; border-radius: 8px; border-left: 6px solid {bordino}; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
             <h3 style="margin: 0; margin-bottom: 5px; color: #000; font-size: 18px;">{scommessa}</h3>
             <p style="font-size: 14px; margin: 0; color: #222;">{dettaglio}</p>
@@ -280,7 +259,7 @@ def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
     return html
 
 # -----------------------------------------------------------------------------
-# 3. SISTEMA DI PLOTTING (GRAFICA PULITA)
+# 3. SISTEMA DI PLOTTING (LEGENDA RIPRISTINATA)
 # -----------------------------------------------------------------------------
 
 def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
@@ -312,18 +291,17 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
     
     bar_width = spot * 0.007
     
-    # 1. Barre Sbiadite (Sfondo)
+    # 1. Barre Sbiadite
     ax.bar(puts["strike"], -puts["openInterest"], color="#ffcc80", alpha=0.25, width=bar_width)
     ax.bar(calls["strike"], calls["openInterest"], color="#90caf9", alpha=0.25, width=bar_width)
     
     # 2. Muri Intensi
     for w in call_walls:
         val = calls[calls['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#0d47a1", alpha=0.9, width=bar_width) # Blu scuro
-        
+        ax.bar(w, val, color="#0d47a1", alpha=0.9, width=bar_width)
     for w in put_walls:
         val = -puts[puts['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#e65100", alpha=0.9, width=bar_width) # Arancio scuro
+        ax.bar(w, val, color="#e65100", alpha=0.9, width=bar_width)
 
     # 3. Linea GEX
     ax2 = ax.twinx()
@@ -336,7 +314,7 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
     if flip:
         ax.axvline(flip, color="purple", ls="-.", lw=1.2, label="Flip")
 
-    # 5. Etichette Leggibili (Bbox)
+    # 5. Etichette Muri
     max_y = calls["openInterest"].max()
     y_offset = max_y * 0.03
     bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#cccccc", alpha=0.9)
@@ -345,24 +323,33 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
         val = calls[calls['strike']==w]['openInterest'].sum()
         ax.text(w, val + y_offset, f"C {int(w)}", color="#0d47a1", fontsize=9, fontweight='bold', 
                 ha='center', va='bottom', bbox=bbox_props, zorder=20)
-                
     for w in put_walls:
         val = -puts[puts['strike']==w]['openInterest'].sum()
         ax.text(w, val - y_offset, f"P {int(w)}", color="#e65100", fontsize=9, fontweight='bold', 
                 ha='center', va='top', bbox=bbox_props, zorder=20)
 
-    # 6. ASSI E WATERMARK (FIX RICHIESTI)
+    # 6. ASSI, WATERMARK E LEGENDA (FIX v18.4)
     ax.set_xlabel("Strike")
-    # FIX: Etichetta Y-SX in grassetto e più grande
     ax.set_ylabel("Open Interest", fontsize=11, fontweight='bold', color="#444")
-    
     ax2.set_ylabel("Gamma Exposure")
     ax2.axhline(0, color="grey", lw=0.5)
     
-    # FIX: Watermark in basso a destra
-    ax.text(0.99, 0.02, "GEX Focused Pro v18.3", transform=ax.transAxes, 
+    # Watermark
+    ax.text(0.99, 0.02, "GEX Focused Pro v18.4", transform=ax.transAxes, 
             ha="right", va="bottom", fontsize=14, color="#999999", 
             fontweight="bold", alpha=0.5)
+
+    # --- RIPRISTINO LEGENDA MANUALE ---
+    legend_elements = [
+        Patch(facecolor='#90caf9', edgecolor='none', label='Call OI'),
+        Patch(facecolor='#ffcc80', edgecolor='none', label='Put OI'),
+        Line2D([0], [0], color='blue', lw=1.5, ls='--', label=f'Spot {spot:.0f}'),
+        Line2D([0], [0], color='#999999', lw=1.5, label='Net GEX'),
+    ]
+    if flip:
+        legend_elements.append(Line2D([0], [0], color='purple', lw=1.5, ls='-.', label=f'Flip {flip:.0f}'))
+
+    ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=10)
 
     plt.title(f"{symbol} GEX Matrix | {expiry}", fontsize=12, pad=10)
     plt.tight_layout()
@@ -373,7 +360,7 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Pro v18.3 Explicit")
+st.title("⚡ GEX Pro v18.4 Explicit")
 
 col1, col2 = st.columns([1, 2])
 
@@ -391,7 +378,6 @@ with col1:
         except: pass
     
     st.markdown("---")
-    # Configurazione Dealer Ibrida (Default Corretto)
     dealer_long_call = st.checkbox("Dealer Long CALL (+)", value=True, help="Default: Dealer comprano da chi vende Covered Calls.")
     dealer_long_put = st.checkbox("Dealer Long PUT (+)", value=False, help="Default: Dealer vendono a chi compra Protezione (-).")
     
@@ -420,11 +406,10 @@ with col2:
                 if err_calc:
                     st.error(err_calc)
                 else:
-                    # Plot
                     fig, c_walls, p_walls = plot_dashboard(symbol, data_res, spot, sel_exp, dist_min)
                     st.pyplot(fig)
                     
-                    # Report Esplicito (con Fix Leggibilità)
+                    # HTML Render (Safe)
                     html_rep = generate_detailed_report(symbol, spot, data_res, c_walls, p_walls)
                     st.markdown(html_rep, unsafe_allow_html=True)
                     
@@ -432,4 +417,3 @@ with col2:
                     buf = BytesIO()
                     fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
                     st.download_button("💾 Salva Grafico", buf.getvalue(), f"GEX_{symbol}.png", "image/png")
-                 
