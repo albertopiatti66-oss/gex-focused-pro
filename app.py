@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Focused Pro v18.5 (Strict Walls & Red Flip)
-- Gamma Flip is now Bright Red
-- WALLS LOGIC FIXED: 
-  * Selects Top 3 Calls ONLY ABOVE Spot (Resistances)
-  * Selects Top 3 Puts ONLY BELOW Spot (Supports)
-- Report focuses on the nearest Wall
+GEX Focused Pro v18.6 (All-in-One Image)
+- Single Downloadable Image (Chart + Text Report combined)
+- Strict Walls logic preserved
+- Red Flip preserved
 """
 
 import streamlit as st
@@ -13,15 +11,17 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from matplotlib import gridspec
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from scipy.stats import norm
 from datetime import datetime, timezone
 from io import BytesIO
+import textwrap
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Pro v18.5", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Pro v18.6", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -132,7 +132,7 @@ def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=
     }, None
 
 # -----------------------------------------------------------------------------
-# 2. SISTEMA DI REPORTISTICA
+# 2. LOGICA DI ANALISI (PREPARAZIONE DATI REPORT)
 # -----------------------------------------------------------------------------
 
 def find_zero_crossing(df, spot):
@@ -155,7 +155,8 @@ def find_zero_crossing(df, spot):
     except:
         return None
 
-def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
+def get_analysis_content(spot, data, call_walls, put_walls):
+    """Calcola stringhe e colori per il report, ma non genera HTML."""
     tot_gex = data['total_gex']
     net_bias = data['net_gamma_bias']
     global_flip = data['gamma_flip']
@@ -165,25 +166,25 @@ def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
     effective_flip = local_flip if local_flip else global_flip
     
     regime_status = "LONG GAMMA" if tot_gex > 0 else "SHORT GAMMA"
+    regime_color = "green" if tot_gex > 0 else "red"
     
-    if net_bias > 40: bias_desc = f"Dominanza Call (**{net_bias:.1f}%**)."
-    elif net_bias < -40: bias_desc = f"Dominanza Put (**{abs(net_bias):.1f}%**)."
-    else: bias_desc = f"Neutrale ({net_bias:.1f}%)."
+    if net_bias > 40: bias_desc = f"Dominanza Call ({net_bias:.1f}%)"
+    elif net_bias < -40: bias_desc = f"Dominanza Put ({abs(net_bias):.1f}%)"
+    else: bias_desc = f"Neutrale ({net_bias:.1f}%)"
 
     safe_zone = False
     if effective_flip:
         if spot > effective_flip:
             safe_zone = True
-            zone_desc = f"Prezzo SOPRA il Flip ({effective_flip:.0f}). Safe Zone."
+            flip_desc = f"Prezzo SOPRA il Flip ({effective_flip:.0f}) - Safe Zone"
         else:
             safe_zone = False
-            zone_desc = f"Prezzo SOTTO il Flip ({effective_flip:.0f}). Danger Zone."
-        flip_analysis = zone_desc
+            flip_desc = f"Prezzo SOTTO il Flip ({effective_flip:.0f}) - Danger Zone"
     else:
-        flip_analysis = "Nessun Flip chiaro."
+        flip_desc = "Nessun Flip chiaro rilevato"
 
     scommessa = ""
-    colore_sintesi = "#ffffff"
+    colore_bg = "#ffffff"
     bordino = "grey"
     icona = ""
 
@@ -200,70 +201,59 @@ def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
     if safe_zone and tot_gex > 0:
         if net_bias > 0:
             scommessa = f"{icona} Il mercato {direzione_base}"
-            dettaglio = "Contesto **Favorevole**: Siamo in Safe Zone con Dealer 'ammortizzatori'."
-            colore_sintesi = "#e8f5e9"
+            dettaglio = "Contesto Favorevole: Siamo in Safe Zone con Dealer 'ammortizzatori'."
+            colore_bg = "#e8f5e9" # Verde chiaro
             bordino = "green"
         else:
             scommessa = "⚠️ Il mercato è CAUTO (Copertura)"
             dettaglio = "Bias Put presente ma il prezzo tiene la Safe Zone. Possibile rimbalzo."
-            colore_sintesi = "#fff3e0"
+            colore_bg = "#fff3e0" # Arancio chiaro
             bordino = "orange"
     elif not safe_zone:
         if net_bias < 0:
             scommessa = f"{icona} Il mercato {direzione_base}"
-            dettaglio = "Contesto **Critico**: Siamo sotto il Flip e i Dealer accelerano i ribassi."
-            colore_sintesi = "#ffebee"
+            dettaglio = "Contesto Critico: Siamo sotto il Flip e i Dealer accelerano i ribassi."
+            colore_bg = "#ffebee" # Rosso chiaro
             bordino = "red"
         else:
             scommessa = "⚠️ Il mercato è INTRAPPOLATO (Bull Trap)"
             dettaglio = f"Tante Call aperte ma prezzo sotto il Flip ({effective_flip:.0f}). Se non recupera, liquidano le Call."
-            colore_sintesi = "#ffccbc"
+            colore_bg = "#ffccbc" # Rosso scuro
             bordino = "darkred"
     else:
         scommessa = f"{icona} Il mercato {direzione_base}"
         dettaglio = "Situazione transitoria."
+        colore_bg = "#f5f5f5"
 
-    # --- LOGICA REPORT WALLS AGGIORNATA (SOLO I PRIMI) ---
-    # Siccome le liste wall ora sono rigorose (Calls>Spot, Puts<Spot)
-    # Il muro Call più vicino è il minimo della lista Call
-    # Il muro Put più vicino è il massimo della lista Put
-    
-    first_cw = min(call_walls) if call_walls else None
-    first_pw = max(put_walls) if put_walls else None
-    
-    cw_txt = f"{int(first_cw)}" if first_cw else "-"
-    pw_txt = f"{int(first_pw)}" if first_pw else "-"
+    cw = min(call_walls) if call_walls else None
+    pw = max(put_walls) if put_walls else None
+    cw_txt = f"{int(cw)}" if cw else "-"
+    pw_txt = f"{int(pw)}" if pw else "-"
 
-    html = f"""
-    <div style="font-family: sans-serif; background-color: white; color: black; padding: 20px; border-radius: 10px; border: 1px solid #ccc;">
-        <div style="display: flex; justify-content: space-between; font-size: 13px; color: #333; margin-bottom: 10px; border-bottom: 1px solid #ddd; padding-bottom: 5px;">
-            <span>Spot: <strong>{spot:.2f}</strong></span>
-            <span>Regime: <strong>{regime_status}</strong></span>
-            <span>Bias: <strong>{bias_desc}</strong></span>
-        </div>
-        <div style="font-size: 13px; margin-bottom: 10px; color: #333;">
-            <strong>Analisi Livelli:</strong> {flip_analysis}<br>
-            <span style="color: #0d47a1;">Resistenza Call (1° Muro): <strong>{cw_txt}</strong></span> | 
-            <span style="color: #e65100;">Supporto Put (1° Muro): <strong>{pw_txt}</strong></span>
-        </div>
-        <div style="background-color: {colore_sintesi}; padding: 15px; border-radius: 8px; border-left: 6px solid {bordino}; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-            <h3 style="margin: 0; margin-bottom: 5px; color: #000; font-size: 18px;">{scommessa}</h3>
-            <p style="font-size: 14px; margin: 0; color: #222;">{dettaglio}</p>
-        </div>
-    </div>
-    """
-    return html
+    return {
+        "spot": spot,
+        "regime": regime_status,
+        "regime_color": regime_color,
+        "bias": bias_desc,
+        "flip_desc": flip_desc,
+        "cw": cw_txt,
+        "pw": pw_txt,
+        "scommessa": scommessa,
+        "dettaglio": dettaglio,
+        "colore_bg": colore_bg,
+        "bordino": bordino
+    }
 
 # -----------------------------------------------------------------------------
-# 3. SISTEMA DI PLOTTING (STRICT WALLS & RED FLIP)
+# 3. PLOTTING UNIFICATO (GRAFICO + REPORT)
 # -----------------------------------------------------------------------------
 
-def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
+def plot_dashboard_unified(symbol, data, spot, expiry, dist_min_pct):
     calls, puts = data["calls"], data["puts"]
     gex_strike = data["gex_by_strike"]
     flip = data["gamma_flip"]
     
-    # --- NUOVA LOGICA MURI RIGOROSA ---
+    # 1. Calcolo Muri Rigorosi
     calls = calls.copy(); puts = puts.copy()
     calls["WallScore"] = calls["openInterest"]
     puts["WallScore"] = puts["openInterest"]
@@ -279,24 +269,26 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
 
     min_dist_val = spot * (dist_min_pct / 100.0)
     
-    # 1. Filtro rigido: Call SOLO Sopra, Put SOLO Sotto
     calls_above = calls[calls["strike"] > spot].copy()
     puts_below = puts[puts["strike"] < spot].copy()
     
     call_walls = get_top_levels(calls_above, min_dist_val)
     put_walls = get_top_levels(puts_below, min_dist_val)
 
-    # Plot Setup
-    fig = plt.figure(figsize=(13, 6))
-    ax = fig.add_subplot(111)
+    # 2. Ottieni Dati Report
+    rep = get_analysis_content(spot, data, call_walls, put_walls)
+
+    # 3. Setup Figura (Più alta per contenere il report)
+    fig = plt.figure(figsize=(13, 9)) # Aumentata altezza
+    gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1], hspace=0.15) # 3 parti grafico, 1 parte testo
     
+    # --- SUBPLOT 1: GRAFICO ---
+    ax = fig.add_subplot(gs[0])
     bar_width = spot * 0.007
     
-    # 1. Barre Sbiadite (Tutte)
     ax.bar(puts["strike"], -puts["openInterest"], color="#ffcc80", alpha=0.25, width=bar_width)
     ax.bar(calls["strike"], calls["openInterest"], color="#90caf9", alpha=0.25, width=bar_width)
     
-    # 2. Muri Intensi (Solo i top 3 selezionati)
     for w in call_walls:
         val = calls[calls['strike']==w]['openInterest'].sum()
         ax.bar(w, val, color="#0d47a1", alpha=0.9, width=bar_width)
@@ -304,63 +296,82 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
         val = -puts[puts['strike']==w]['openInterest'].sum()
         ax.bar(w, val, color="#e65100", alpha=0.9, width=bar_width)
 
-    # 3. Linea GEX
     ax2 = ax.twinx()
     ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]>=0), color="green", alpha=0.10, interpolate=True)
     ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]<0), color="red", alpha=0.10, interpolate=True)
     ax2.plot(gex_strike["strike"], gex_strike["GEX"], color="#999999", lw=1.5, ls="-", label="Net GEX")
     
-    # 4. Linee Verticali (FLIP ROSSO VIVO)
     ax.axvline(spot, color="blue", ls="--", lw=1.2, label="Spot")
     if flip:
-        ax.axvline(flip, color="red", ls="-.", lw=1.5, label="Flip") # <-- ROSSO
+        ax.axvline(flip, color="red", ls="-.", lw=1.5, label="Flip")
 
-    # 5. Etichette Muri
+    # Etichette
     max_y = calls["openInterest"].max()
     y_offset = max_y * 0.03
     bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#cccccc", alpha=0.9)
 
     for w in call_walls:
         val = calls[calls['strike']==w]['openInterest'].sum()
-        ax.text(w, val + y_offset, f"C {int(w)}", color="#0d47a1", fontsize=9, fontweight='bold', 
-                ha='center', va='bottom', bbox=bbox_props, zorder=20)
+        ax.text(w, val + y_offset, f"C {int(w)}", color="#0d47a1", fontsize=9, fontweight='bold', ha='center', va='bottom', bbox=bbox_props, zorder=20)
     for w in put_walls:
         val = -puts[puts['strike']==w]['openInterest'].sum()
-        ax.text(w, val - y_offset, f"P {int(w)}", color="#e65100", fontsize=9, fontweight='bold', 
-                ha='center', va='top', bbox=bbox_props, zorder=20)
+        ax.text(w, val - y_offset, f"P {int(w)}", color="#e65100", fontsize=9, fontweight='bold', ha='center', va='top', bbox=bbox_props, zorder=20)
 
-    # 6. Assi & Watermark
-    ax.set_xlabel("Strike")
     ax.set_ylabel("Open Interest", fontsize=11, fontweight='bold', color="#444")
     ax2.set_ylabel("Gamma Exposure")
     ax2.axhline(0, color="grey", lw=0.5)
-    
-    ax.text(0.99, 0.02, "GEX Focused Pro v18.5", transform=ax.transAxes, 
-            ha="right", va="bottom", fontsize=14, color="#999999", 
-            fontweight="bold", alpha=0.5)
+    ax.text(0.99, 0.02, "GEX Focused Pro v18.6", transform=ax.transAxes, ha="right", va="bottom", fontsize=14, color="#999999", fontweight="bold", alpha=0.5)
 
-    # Legenda (con FLIP ROSSO)
     legend_elements = [
         Patch(facecolor='#90caf9', edgecolor='none', label='Call OI'),
         Patch(facecolor='#ffcc80', edgecolor='none', label='Put OI'),
         Line2D([0], [0], color='blue', lw=1.5, ls='--', label=f'Spot {spot:.0f}'),
         Line2D([0], [0], color='#999999', lw=1.5, label='Net GEX'),
     ]
-    if flip:
-        legend_elements.append(Line2D([0], [0], color='red', lw=1.5, ls='-.', label=f'Flip {flip:.0f}')) # <-- ROSSO
-
+    if flip: legend_elements.append(Line2D([0], [0], color='red', lw=1.5, ls='-.', label=f'Flip {flip:.0f}'))
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=10)
+    ax.set_title(f"{symbol} GEX Matrix | {expiry}", fontsize=13, pad=10, fontweight='bold')
 
-    plt.title(f"{symbol} GEX Matrix | {expiry}", fontsize=12, pad=10)
-    plt.tight_layout()
+    # --- SUBPLOT 2: REPORT DI TESTO ---
+    ax_rep = fig.add_subplot(gs[1])
+    ax_rep.axis("off") # Nascondi assi
     
-    return fig, call_walls, put_walls
+    # Costruzione Testo
+    # Riga 1: Dati Base
+    line1 = f"SPOT: {rep['spot']:.2f}   |   REGIME: {rep['regime']}   |   BIAS: {rep['bias']}"
+    ax_rep.text(0.01, 0.85, line1, fontsize=11, fontweight='bold', color="#333", transform=ax_rep.transAxes)
+    
+    # Riga 2: Livelli e Analisi
+    line2 = f"FLIP: {rep['flip_desc']}"
+    line3 = f"RESISTENZA (1° Call): {rep['cw']}   |   SUPPORTO (1° Put): {rep['pw']}"
+    ax_rep.text(0.01, 0.70, line2, fontsize=10, color="#444", transform=ax_rep.transAxes)
+    ax_rep.text(0.01, 0.58, line3, fontsize=10, color="#444", transform=ax_rep.transAxes)
+    
+    # BOX SINTESI (Disegnato come Rettangolo)
+    # Coordinate box (in assi relativi 0-1)
+    box_x, box_y = 0.01, 0.05
+    box_w, box_h = 0.98, 0.45
+    
+    rect = patches.FancyBboxPatch((box_x, box_y), box_w, box_h, boxstyle="round,pad=0.02", 
+                                  linewidth=2, edgecolor=rep['bordino'], facecolor=rep['colore_bg'], 
+                                  transform=ax_rep.transAxes, zorder=1)
+    ax_rep.add_patch(rect)
+    
+    # Testo Sintesi dentro il box
+    sintesi_title = rep['scommessa']
+    sintesi_desc = textwrap.fill(rep['dettaglio'], width=110) # A capo automatico
+    
+    ax_rep.text(box_x + 0.02, box_y + 0.30, sintesi_title, fontsize=14, fontweight='bold', color="black", transform=ax_rep.transAxes)
+    ax_rep.text(box_x + 0.02, box_y + 0.15, sintesi_desc, fontsize=11, color="#222", transform=ax_rep.transAxes)
+
+    plt.tight_layout()
+    return fig
 
 # -----------------------------------------------------------------------------
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Pro v18.5 Explicit")
+st.title("⚡ GEX Pro v18.6 All-in-One")
 
 col1, col2 = st.columns([1, 2])
 
@@ -392,7 +403,7 @@ with col1:
 
 with col2:
     if btn_calc and spot and sel_exp:
-        with st.spinner("Elaborazione Strategica..."):
+        with st.spinner("Creazione Report Completo..."):
             calls, puts, err = get_option_data(symbol, sel_exp, spot, range_pct)
             
             if err:
@@ -406,13 +417,11 @@ with col2:
                 if err_calc:
                     st.error(err_calc)
                 else:
-                    fig, c_walls, p_walls = plot_dashboard(symbol, data_res, spot, sel_exp, dist_min)
+                    # Genera UNICA Figura con tutto dentro
+                    fig = plot_dashboard_unified(symbol, data_res, spot, sel_exp, dist_min)
                     st.pyplot(fig)
-                    
-                    html_rep = generate_detailed_report(symbol, spot, data_res, c_walls, p_walls)
-                    st.markdown(html_rep, unsafe_allow_html=True)
                     
                     st.markdown("---")
                     buf = BytesIO()
                     fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
-                    st.download_button("💾 Salva Grafico", buf.getvalue(), f"GEX_{symbol}.png", "image/png")
+                    st.download_button("💾 Scarica Immagine Completa (Grafico + Report)", buf.getvalue(), f"GEX_FULL_{symbol}.png", "image/png", use_container_width=True)
