@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-GEX Focused Pro v18.4 (Fixed Legend & Report)
-- Re-added Chart Legend (Upper Left)
-- Fixed HTML Report rendering
-- Watermark & High Contrast kept
+GEX Focused Pro v18.5 (Strict Walls & Red Flip)
+- Gamma Flip is now Bright Red
+- WALLS LOGIC FIXED: 
+  * Selects Top 3 Calls ONLY ABOVE Spot (Resistances)
+  * Selects Top 3 Puts ONLY BELOW Spot (Supports)
+- Report focuses on the nearest Wall
 """
 
 import streamlit as st
@@ -19,14 +21,13 @@ from datetime import datetime, timezone
 from io import BytesIO
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Pro v18.4", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Pro v18.5", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
 # -----------------------------------------------------------------------------
 
 def get_spot_price(ticker):
-    """Recupera il prezzo spot corrente."""
     try:
         tk = yf.Ticker(ticker)
         price = tk.fast_info.get("last_price")
@@ -39,21 +40,17 @@ def get_spot_price(ticker):
         return None
 
 def vectorized_bs_gamma(S, K, T, r, sigma):
-    """Calcolo Black-Scholes Gamma vettorializzato (NumPy)."""
     T = np.maximum(T, 1e-5)
     sigma = np.maximum(sigma, 1e-5)
     S = float(S)
-    
     with np.errstate(divide='ignore', invalid='ignore'):
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
         pdf = norm.pdf(d1)
         gamma = pdf / (S * sigma * np.sqrt(T))
-    
     return np.nan_to_num(gamma)
 
 @st.cache_data(ttl=300)
 def get_option_data(symbol, expiry, spot_price, range_pct=25.0):
-    """Scarica e pulisce la chain opzioni."""
     try:
         tk = yf.Ticker(symbol)
         chain = tk.option_chain(expiry)
@@ -78,7 +75,6 @@ def get_option_data(symbol, expiry, spot_price, range_pct=25.0):
 
 def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=-1, min_oi_ratio=0.1):
     risk_free = 0.05
-    
     try:
         exp_dt = datetime.strptime(expiry_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
@@ -88,7 +84,6 @@ def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=
     dte = (exp_dt - now_dt).total_seconds() / 86400.0
     T = max(dte / 365.0, 1e-4)
 
-    # Filtro OI
     max_oi = max(calls["openInterest"].max(), puts["openInterest"].max()) if not calls.empty and not puts.empty else 0
     threshold = max_oi * min_oi_ratio
     
@@ -98,15 +93,12 @@ def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=
     if calls_clean.empty: calls_clean = calls.copy()
     if puts_clean.empty: puts_clean = puts.copy()
 
-    # Calcolo Gamma Vettoriale
     c_gamma = vectorized_bs_gamma(spot, calls_clean["strike"].values, T, risk_free, calls_clean["impliedVolatility"].values)
     p_gamma = vectorized_bs_gamma(spot, puts_clean["strike"].values, T, risk_free, puts_clean["impliedVolatility"].values)
 
-    # GEX Formula Standard ($ Gamma)
     calls_clean["GEX"] = call_sign * c_gamma * spot * calls_clean["openInterest"].values * 100
     puts_clean["GEX"] = put_sign * p_gamma * spot * puts_clean["openInterest"].values * 100
 
-    # Ricalcolo completo per plotting (senza filtri OI)
     full_c_gamma = vectorized_bs_gamma(spot, calls["strike"].values, T, risk_free, calls["impliedVolatility"].values)
     full_p_gamma = vectorized_bs_gamma(spot, puts["strike"].values, T, risk_free, puts["impliedVolatility"].values)
     calls["GEX"] = call_sign * full_c_gamma * spot * calls["openInterest"].values * 100
@@ -115,7 +107,6 @@ def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=
     gex_df = pd.concat([calls[["strike", "GEX"]], puts[["strike", "GEX"]]])
     gex_by_strike = gex_df.groupby("strike")["GEX"].sum().reset_index().sort_values("strike")
 
-    # Indicatori
     total_call_gex = calls["GEX"].sum()
     total_put_gex = puts["GEX"].sum()
     total_gex = total_call_gex + total_put_gex
@@ -137,12 +128,11 @@ def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=
         "gex_by_strike": gex_by_strike,
         "gamma_flip": gamma_flip,
         "net_gamma_bias": net_gamma_bias,
-        "total_gex": total_gex,
-        "regime": "LONG GAMMA" if total_gex > 0 else "SHORT GAMMA"
+        "total_gex": total_gex
     }, None
 
 # -----------------------------------------------------------------------------
-# 2. SISTEMA DI REPORTISTICA AVANZATO
+# 2. SISTEMA DI REPORTISTICA
 # -----------------------------------------------------------------------------
 
 def find_zero_crossing(df, spot):
@@ -233,10 +223,16 @@ def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
         scommessa = f"{icona} Il mercato {direzione_base}"
         dettaglio = "Situazione transitoria."
 
-    cw = min([w for w in call_walls if w > spot], default="N/A")
-    pw = max([w for w in put_walls if w < spot], default="N/A")
-    cw_txt = f"{int(cw)}" if cw != "N/A" else "-"
-    pw_txt = f"{int(pw)}" if pw != "N/A" else "-"
+    # --- LOGICA REPORT WALLS AGGIORNATA (SOLO I PRIMI) ---
+    # Siccome le liste wall ora sono rigorose (Calls>Spot, Puts<Spot)
+    # Il muro Call più vicino è il minimo della lista Call
+    # Il muro Put più vicino è il massimo della lista Put
+    
+    first_cw = min(call_walls) if call_walls else None
+    first_pw = max(put_walls) if put_walls else None
+    
+    cw_txt = f"{int(first_cw)}" if first_cw else "-"
+    pw_txt = f"{int(first_pw)}" if first_pw else "-"
 
     html = f"""
     <div style="font-family: sans-serif; background-color: white; color: black; padding: 20px; border-radius: 10px; border: 1px solid #ccc;">
@@ -247,8 +243,8 @@ def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
         </div>
         <div style="font-size: 13px; margin-bottom: 10px; color: #333;">
             <strong>Analisi Livelli:</strong> {flip_analysis}<br>
-            <span style="color: #0d47a1;">Resistenza Call: <strong>{cw_txt}</strong></span> | 
-            <span style="color: #e65100;">Supporto Put: <strong>{pw_txt}</strong></span>
+            <span style="color: #0d47a1;">Resistenza Call (1° Muro): <strong>{cw_txt}</strong></span> | 
+            <span style="color: #e65100;">Supporto Put (1° Muro): <strong>{pw_txt}</strong></span>
         </div>
         <div style="background-color: {colore_sintesi}; padding: 15px; border-radius: 8px; border-left: 6px solid {bordino}; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
             <h3 style="margin: 0; margin-bottom: 5px; color: #000; font-size: 18px;">{scommessa}</h3>
@@ -259,7 +255,7 @@ def generate_detailed_report(symbol, spot, data, call_walls, put_walls):
     return html
 
 # -----------------------------------------------------------------------------
-# 3. SISTEMA DI PLOTTING (LEGENDA RIPRISTINATA)
+# 3. SISTEMA DI PLOTTING (STRICT WALLS & RED FLIP)
 # -----------------------------------------------------------------------------
 
 def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
@@ -267,7 +263,7 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
     gex_strike = data["gex_by_strike"]
     flip = data["gamma_flip"]
     
-    # Identificazione Muri
+    # --- NUOVA LOGICA MURI RIGOROSA ---
     calls = calls.copy(); puts = puts.copy()
     calls["WallScore"] = calls["openInterest"]
     puts["WallScore"] = puts["openInterest"]
@@ -282,8 +278,13 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
         return levels
 
     min_dist_val = spot * (dist_min_pct / 100.0)
-    call_walls = get_top_levels(calls, min_dist_val)
-    put_walls = get_top_levels(puts, min_dist_val)
+    
+    # 1. Filtro rigido: Call SOLO Sopra, Put SOLO Sotto
+    calls_above = calls[calls["strike"] > spot].copy()
+    puts_below = puts[puts["strike"] < spot].copy()
+    
+    call_walls = get_top_levels(calls_above, min_dist_val)
+    put_walls = get_top_levels(puts_below, min_dist_val)
 
     # Plot Setup
     fig = plt.figure(figsize=(13, 6))
@@ -291,11 +292,11 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
     
     bar_width = spot * 0.007
     
-    # 1. Barre Sbiadite
+    # 1. Barre Sbiadite (Tutte)
     ax.bar(puts["strike"], -puts["openInterest"], color="#ffcc80", alpha=0.25, width=bar_width)
     ax.bar(calls["strike"], calls["openInterest"], color="#90caf9", alpha=0.25, width=bar_width)
     
-    # 2. Muri Intensi
+    # 2. Muri Intensi (Solo i top 3 selezionati)
     for w in call_walls:
         val = calls[calls['strike']==w]['openInterest'].sum()
         ax.bar(w, val, color="#0d47a1", alpha=0.9, width=bar_width)
@@ -309,10 +310,10 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
     ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]<0), color="red", alpha=0.10, interpolate=True)
     ax2.plot(gex_strike["strike"], gex_strike["GEX"], color="#999999", lw=1.5, ls="-", label="Net GEX")
     
-    # 4. Linee Verticali
+    # 4. Linee Verticali (FLIP ROSSO VIVO)
     ax.axvline(spot, color="blue", ls="--", lw=1.2, label="Spot")
     if flip:
-        ax.axvline(flip, color="purple", ls="-.", lw=1.2, label="Flip")
+        ax.axvline(flip, color="red", ls="-.", lw=1.5, label="Flip") # <-- ROSSO
 
     # 5. Etichette Muri
     max_y = calls["openInterest"].max()
@@ -328,18 +329,17 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
         ax.text(w, val - y_offset, f"P {int(w)}", color="#e65100", fontsize=9, fontweight='bold', 
                 ha='center', va='top', bbox=bbox_props, zorder=20)
 
-    # 6. ASSI, WATERMARK E LEGENDA (FIX v18.4)
+    # 6. Assi & Watermark
     ax.set_xlabel("Strike")
     ax.set_ylabel("Open Interest", fontsize=11, fontweight='bold', color="#444")
     ax2.set_ylabel("Gamma Exposure")
     ax2.axhline(0, color="grey", lw=0.5)
     
-    # Watermark
-    ax.text(0.99, 0.02, "GEX Focused Pro v18.4", transform=ax.transAxes, 
+    ax.text(0.99, 0.02, "GEX Focused Pro v18.5", transform=ax.transAxes, 
             ha="right", va="bottom", fontsize=14, color="#999999", 
             fontweight="bold", alpha=0.5)
 
-    # --- RIPRISTINO LEGENDA MANUALE ---
+    # Legenda (con FLIP ROSSO)
     legend_elements = [
         Patch(facecolor='#90caf9', edgecolor='none', label='Call OI'),
         Patch(facecolor='#ffcc80', edgecolor='none', label='Put OI'),
@@ -347,7 +347,7 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
         Line2D([0], [0], color='#999999', lw=1.5, label='Net GEX'),
     ]
     if flip:
-        legend_elements.append(Line2D([0], [0], color='purple', lw=1.5, ls='-.', label=f'Flip {flip:.0f}'))
+        legend_elements.append(Line2D([0], [0], color='red', lw=1.5, ls='-.', label=f'Flip {flip:.0f}')) # <-- ROSSO
 
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=10)
 
@@ -360,7 +360,7 @@ def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Pro v18.4 Explicit")
+st.title("⚡ GEX Pro v18.5 Explicit")
 
 col1, col2 = st.columns([1, 2])
 
@@ -409,7 +409,6 @@ with col2:
                     fig, c_walls, p_walls = plot_dashboard(symbol, data_res, spot, sel_exp, dist_min)
                     st.pyplot(fig)
                     
-                    # HTML Render (Safe)
                     html_rep = generate_detailed_report(symbol, spot, data_res, c_walls, p_walls)
                     st.markdown(html_rep, unsafe_allow_html=True)
                     
