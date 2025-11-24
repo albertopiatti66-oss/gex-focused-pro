@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-GEX Focused Pro v18.0 | Streamlit Web App
-Gamma Exposure + DPI + Gamma Flip + Gamma Walls (ORA CORRETTI AL 100% su MAX OI)
-Fixato definitivamente il problema dei Gamma Wall che saltavano i livelli più grossi
+GEX Focused Pro v18.0 (Refactored & Optimized)
+Hybrid Dealer Model + Vectorized Math
 """
 
 import streamlit as st
@@ -11,280 +10,327 @@ import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
-import math
-from datetime import datetime, timezone
-import base64
+from scipy.stats import norm
+from datetime import datetime, timezone, timedelta
 from io import BytesIO
 
-st.set_page_config(page_title="GEX Focused Pro v18", layout="wide", page_icon="Chart")
+# Configurazione pagina
+st.set_page_config(page_title="GEX Pro v18 Optimized", layout="wide", page_icon="📈")
 
-# ---------------------- Funzioni di supporto ----------------------
-def _norm_pdf(x):
-    return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+# ---------------------- 1. Motore Matematico Vettorializzato ----------------------
 
-def bs_gamma(S, K, T, r, sigma):
-    if any(v <= 0 for v in [S, K, T, sigma]):
-        return 0.0
+def get_spot_price(ticker):
+    """Recupera il prezzo spot corrente in modo robusto."""
     try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        return _norm_pdf(d1) / (S * sigma * math.sqrt(T))
-    except:
-        return 0.0
+        tk = yf.Ticker(ticker)
+        # Prova fast_info
+        price = tk.fast_info.get("last_price")
+        if not price:
+            # Fallback su history
+            hist = tk.history(period="1d")
+            if not hist.empty:
+                price = hist["Close"].iloc[-1]
+        return float(price) if price else None
+    except Exception:
+        return None
 
-def days_to_expiry(exp):
-    now = datetime.now(timezone.utc)
-    e = datetime.strptime(exp, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    return max((e - now).total_seconds() / 86400, 1.0)
+def vectorized_bs_gamma(S, K, T, r, sigma):
+    """
+    Calcola il Black-Scholes Gamma usando vettori NumPy (super veloce).
+    """
+    # Evita divisioni per zero
+    T = np.maximum(T, 1e-5)
+    sigma = np.maximum(sigma, 1e-5)
+    
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    pdf = norm.pdf(d1)
+    gamma = pdf / (S * sigma * np.sqrt(T))
+    return gamma
 
-# ---------------------- CORE FUNCTION AGGIORNATA ----------------------
 @st.cache_data(ttl=300)
-def compute_gex_dpi_focused(symbol, expiry_date, range_pct=25.0, min_oi_ratio=0.4, dist_min=0.03, call_sign=1, put_sign=-1):
-    CONTRACT_MULTIPLIER = 100.0
-    RISK_FREE = 0.05
-
-    tkdata = yf.Ticker(symbol)
-    info = getattr(tkdata, "fast_info", {}) or {}
+def get_option_data(symbol, expiry, spot_price, range_pct=25.0):
+    """Scarica e pulisce la chain opzioni."""
     try:
-        spot = float(info.get("last_price") or tkdata.history(period="1d")["Close"].iloc[-1])
-    except:
-        spot = float(tkdata.history(period="5d")["Close"].dropna().iloc[-1])
+        tk = yf.Ticker(symbol)
+        chain = tk.option_chain(expiry)
+        calls = chain.calls.copy()
+        puts = chain.puts.copy()
+    except Exception as e:
+        return None, None, f"Errore download dati: {e}"
 
-    T_days = days_to_expiry(expiry_date)
-    T = T_days / 365.0
+    # Pulizia dati base
+    for df in [calls, puts]:
+        df.fillna(0, inplace=True)
+        # Converti colonne critiche
+        df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
+        df["openInterest"] = pd.to_numeric(df["openInterest"], errors="coerce")
+        df["impliedVolatility"] = pd.to_numeric(df["impliedVolatility"], errors="coerce")
 
-    chain = tkdata.option_chain(expiry_date)
-    calls, puts = chain.calls.copy(), chain.puts.copy()
+    # Filtro Range Strike
+    lower_bound = spot_price * (1 - range_pct/100)
+    upper_bound = spot_price * (1 + range_pct/100)
+    
+    calls = calls[(calls["strike"] >= lower_bound) & (calls["strike"] <= upper_bound)]
+    puts = puts[(puts["strike"] >= lower_bound) & (puts["strike"] <= upper_bound)]
 
-    for df in (calls, puts):
-        for c in ["openInterest", "impliedVolatility", "strike"]:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    return calls, puts, None
 
-    lo, hi = (1 - range_pct/100) * spot, (1 + range_pct/100) * spot
-    calls = calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)].copy()
-    puts  = puts [(puts["strike"]  >= lo) & (puts["strike"]  <= hi)].copy()
+# ---------------------- 2. Core Logic (GEX Calculation) ----------------------
+
+def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=-1, min_oi_ratio=0.1):
+    risk_free = 0.05  # Tasso fisso semplificato (si potrebbe rendere dinamico)
+    
+    # Giorni alla scadenza
+    exp_dt = datetime.strptime(expiry_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    now_dt = datetime.now(timezone.utc)
+    dte = (exp_dt - now_dt).total_seconds() / 86400.0
+    T = max(dte / 365.0, 1e-4) # Evita T=0
+
+    # Filtro OI Minimo
+    max_oi = max(calls["openInterest"].max(), puts["openInterest"].max()) if not calls.empty and not puts.empty else 0
+    threshold = max_oi * min_oi_ratio
+    
+    calls = calls[calls["openInterest"] >= threshold].copy()
+    puts = puts[puts["openInterest"] >= threshold].copy()
+
     if calls.empty or puts.empty:
-        raise RuntimeError("Dati insufficienti nel range selezionato.")
+        return None, "Dati insufficienti dopo il filtro OI."
 
-    # Calcolo gamma
-    calls["gamma"] = [bs_gamma(spot, K, T, RISK_FREE, iv)
-                      for K, iv in zip(calls["strike"], calls["impliedVolatility"])]
-    puts["gamma"]  = [bs_gamma(spot, K, T, RISK_FREE, iv)
-                      for K, iv in zip(puts["strike"], puts["impliedVolatility"])]
+    # --- CALCOLO VETTORIALE ---
+    # Call Gamma
+    c_gamma = vectorized_bs_gamma(spot, calls["strike"].values, T, risk_free, calls["impliedVolatility"].values)
+    # Put Gamma
+    p_gamma = vectorized_bs_gamma(spot, puts["strike"].values, T, risk_free, puts["impliedVolatility"].values)
 
-    # GEX
-    calls["GEX"] = call_sign * calls["openInterest"] * CONTRACT_MULTIPLIER * calls["gamma"] * (spot**2)
-    puts["GEX"]  = put_sign  * puts["openInterest"]  * CONTRACT_MULTIPLIER * puts["gamma"]  * (spot**2)
+    # --- GEX FORMULA (Spot Gamma Exposure) ---
+    # GEX = Sign * Gamma * Spot * OI * 100
+    # Nota: Usiamo Spot lineare, non Spot^2, per lo standard industriale
+    calls["GEX"] = call_sign * c_gamma * spot * calls["openInterest"].values * 100
+    puts["GEX"] = put_sign * p_gamma * spot * puts["openInterest"].values * 100
 
-    gex_all = (pd.concat([calls[["strike", "GEX"]], puts[["strike", "GEX"]]])
-               .groupby("strike")["GEX"].sum().reset_index().sort_values("strike"))
+    # Aggregazione per Strike
+    gex_df = pd.concat([calls[["strike", "GEX"]], puts[["strike", "GEX"]]])
+    gex_by_strike = gex_df.groupby("strike")["GEX"].sum().reset_index().sort_values("strike")
 
-    # --- FILTRO OI MINIMO ---
-    max_oi = max(calls["openInterest"].max(), puts["openInterest"].max())
-    min_oi_threshold = max_oi * min_oi_ratio
-    calls = calls[calls["openInterest"] >= min_oi_threshold]
-    puts  = puts[puts["openInterest"] >= min_oi_threshold]
-    if calls.empty or puts.empty:
-        raise RuntimeError(f"Nessun contratto con OI > {min_oi_ratio*100:.0f}% del massimo.")
+    # --- INDICATORI ---
+    total_call_gex = calls["GEX"].sum()
+    total_put_gex = puts["GEX"].sum()
+    total_gex = total_call_gex + total_put_gex
+    
+    # Net Gamma Bias (ex DPI) - % di calls sul totale assoluto
+    abs_total = abs(total_call_gex) + abs(total_put_gex)
+    net_gamma_bias = (total_call_gex / abs_total * 100) if abs_total > 0 else 0
 
-    # ==================== GAMMA WALLS CORRETTI (MAX OI + GAMMA) ====================
-    dist_filter = max(1e-9, spot * dist_min)  # es. 0.03 → 3% dello spot
+    # Gamma Flip (Weighted Average dove il segno cambia)
+    # Se usiamo il modello ibrido (Call+, Put-), cerchiamo dove la somma passa per zero
+    gamma_flip = None
+    if call_sign == 1 and put_sign == -1:
+        # Metodo numerico semplice: Media ponderata degli strike
+        numerator = (calls["strike"] * calls["GEX"]).sum() + (puts["strike"] * puts["GEX"]).sum()
+        if total_gex != 0:
+            raw_flip = numerator / total_gex
+            # Accettiamo il flip solo se è in un range sensato (es. +/- 50% spot)
+            if 0.5 * spot < raw_flip < 1.5 * spot:
+                gamma_flip = raw_flip
 
-    # CALL WALLS (strike > spot)
-    call_cand = calls[calls["strike"] > spot].copy()
-    if not call_cand.empty:
-        # Score = OI × Gamma × Spot² → premia sia volume che sensibilità gamma
-        call_cand["score"] = call_cand["openInterest"] * call_cand["gamma"] * (spot ** 2)
-        call_cand = call_cand.sort_values("score", ascending=False)
-        
-        gw_calls = []
-        for _, row in call_cand.iterrows():
-            k = float(row["strike"])
-            if not gw_calls or all(abs(k - s) > dist_filter for s in gw_calls):
-                gw_calls.append(k)
-            if len(gw_calls) >= 3:
-                break
+    return {
+        "calls": calls,
+        "puts": puts,
+        "gex_by_strike": gex_by_strike,
+        "gamma_flip": gamma_flip,
+        "net_gamma_bias": net_gamma_bias,
+        "total_gex": total_gex,
+        "regime": "LONG GAMMA" if total_gex > 0 else "SHORT GAMMA"
+    }, None
+
+# ---------------------- 3. Plotting System ----------------------
+
+def plot_dashboard(symbol, data, spot, expiry, dist_min_pct):
+    calls, puts = data["calls"], data["puts"]
+    gex_strike = data["gex_by_strike"]
+    flip = data["gamma_flip"]
+    
+    # Identificazione Muri (Walls)
+    # Definiamo Wall come strike con massimo OI pesato per Gamma
+    # Un "Gamma Wall" deve avere alto OI e alta Gamma
+    
+    calls["WallScore"] = calls["openInterest"] # Semplificato su OI come da standard
+    puts["WallScore"] = puts["openInterest"]
+    
+    # Troviamo i Top 3 distanziati
+    def get_top_levels(df, min_dist):
+        df_s = df.sort_values("WallScore", ascending=False)
+        levels = []
+        for k in df_s["strike"]:
+            if not levels or all(abs(k - x) > min_dist for x in levels):
+                levels.append(k)
+            if len(levels) >= 3: break
+        return levels
+
+    min_dist_val = spot * (dist_min_pct / 100.0)
+    call_walls = get_top_levels(calls, min_dist_val)
+    put_walls = get_top_levels(puts, min_dist_val)
+
+    # --- GRAFICO ---
+    fig = plt.figure(figsize=(14, 8))
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 3], hspace=0.3)
+    
+    # Pannello Testuale
+    ax_text = fig.add_subplot(gs[0])
+    ax_text.axis("off")
+    
+    bias_color = "green" if data["total_gex"] > 0 else "red"
+    flip_txt = f"{flip:.2f}" if flip else "N/A (Full Directional)"
+    
+    # Interpretazione Bias
+    if data["net_gamma_bias"] > 50:
+        sentiment = "BULLISH (Call Dominance)"
+    elif data["net_gamma_bias"] < -50:
+        sentiment = "BEARISH (Put Dominance)"
     else:
-        gw_calls = []
+        sentiment = "NEUTRAL / MIXED"
 
-    # PUT WALLS (strike < spot)
-    put_cand = puts[puts["strike"] < spot].copy()
-    if not put_cand.empty:
-        put_cand["score"] = put_cand["openInterest"] * put_cand["gamma"] * (spot ** 2)
-        put_cand = put_cand.sort_values("score", ascending=False)
-        
-        gw_puts = []
-        for _, row in put_cand.iterrows():
-            k = float(row["strike"])
-            if not gw_puts or all(abs(k - s) > dist_filter for s in gw_puts):
-                gw_puts.append(k)
-            if len(gw_puts) >= 3:
-                break
-    else:
-        gw_puts = []
-
-    # --- Indicatori ---
-    gamma_call = calls["GEX"].sum()
-    gamma_put  = puts["GEX"].sum()
-    total_gex = gamma_call + gamma_put
-    dpi = (gamma_call / total_gex) * 100.0 if total_gex != 0 else 0.0
-    gamma_flip = (calls["strike"].mean() * gamma_call + puts["strike"].mean() * gamma_put) / total_gex if total_gex != 0 else None
-    regime = "LONG" if gamma_flip and spot > gamma_flip else "SHORT"
-
-    # --- Grafico ---
-    fig = plt.figure(figsize=(14, 7.4))
-    gs = gridspec.GridSpec(2, 1, height_ratios=[2.1, 4.4], hspace=0.25)
-    ax_rep = fig.add_subplot(gs[0]); ax_rep.axis("off")
-
-    now_str = datetime.now().strftime("%d/%m/%Y alle %H:%M")
-    flip_str = f"{gamma_flip:.0f}" if gamma_flip is not None else "N/A"
-    regime_label = "NEGATIVO" if regime == "SHORT" else "POSITIVO"
-    bias_label = ("Bias Operativo: Direzionale Bearish (PUT-Dominant)"
-                   if regime == "SHORT" else
-                   "Bias Operativo: Mean Reversion Bullish (CALL-Dominant)")
-    commento = ("Rischio breakout ribassista sotto i supporti, momentum alto e dealer short gamma."
-                if regime == "SHORT" else
-                "Probabile stabilità sopra i supporti, momentum basso e dealer long gamma.")
-
-    report_text = (
-        "──────────────────────────────────────────────\n"
-        f"{symbol} — Focused GEX Report ({expiry_date})\n"
-        "──────────────────────────────────────────────\n\n"
-        f"Gamma Regime: {regime_label} | DPI: {dpi:.1f} % | Flip: {flip_str} $\n"
-        f"{bias_label}\n\n"
-        f"CALL Walls: {', '.join(map(lambda x: str(int(round(x))), gw_calls)) or '—'}\n"
-        f"PUT  Walls: {', '.join(map(lambda x: str(int(round(x))), gw_puts)) or '—'}\n\n"
-        f"Commento: {commento}\n\n"
-        f"Report generato il {now_str}  |  Range ±{range_pct:.0f}%\n"
-        "──────────────────────────────────────────────"
+    report = (
+        f"GEX FOCUSED PRO v18  |  {symbol}  |  Exp: {expiry}\n"
+        f"──────────────────────────────────────────────────\n"
+        f"Spot Price:      {spot:.2f}\n"
+        f"Gamma Regime:    {data['regime']} (Tot: {data['total_gex']/1e6:.1f}M $)\n"
+        f"Net Gamma Bias:  {data['net_gamma_bias']:.1f}%  [{sentiment}]\n"
+        f"Gamma Flip:      {flip_txt}\n\n"
+        f"CALL Walls:      {', '.join([str(int(x)) for x in call_walls])}\n"
+        f"PUT Walls:       {', '.join([str(int(x)) for x in put_walls])}\n"
+        f"──────────────────────────────────────────────────"
     )
-    ax_rep.text(0.02, 0.96, report_text, ha="left", va="top", fontsize=10, family="monospace", color="#222222")
+    ax_text.text(0.0, 0.5, report, va="center", fontsize=11, family="monospace", linespacing=1.6)
 
+    # Pannello Grafico
     ax = fig.add_subplot(gs[1])
-    call_color, put_color = "#4287f5", "#ff9800"
-    call_wall_color, put_wall_color = "#003d99", "#ff7b00"
-
-    ax.bar(puts["strike"], puts["openInterest"], color=put_color, alpha=0.35, label="PUT OI")
-    ax.bar(calls["strike"], calls["openInterest"], color=call_color, alpha=0.35, label="CALL OI")
-
+    
+    # 1. Barre OI
+    ax.bar(puts["strike"], -puts["openInterest"], color="#ff9800", alpha=0.3, label="PUT OI", width=spot*0.005)
+    ax.bar(calls["strike"], calls["openInterest"], color="#2196f3", alpha=0.3, label="CALL OI", width=spot*0.005)
+    
+    # 2. Linea GEX Netta
     ax2 = ax.twinx()
-    gex_all["GEX_plot"] = -gex_all["GEX"]
-    ax2.plot(gex_all["strike"], gex_all["GEX_plot"], color="#d8d8d8", lw=1.6, ls="--", label="GEX totale")
-    ax2.axhline(0, color="#bbbbbb", lw=1.0, ls="--", alpha=0.6)
-    ax2.set_ylabel("Gamma Exposure", color="#444444")
-    ax2.ticklabel_format(style="plain", axis="y")
-    ax2.grid(False)
+    # Fill area per GEX
+    ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]>=0), color="green", alpha=0.15)
+    ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]<0), color="red", alpha=0.15)
+    ax2.plot(gex_strike["strike"], gex_strike["GEX"], color="#444", lw=1.5, label="Net GEX ($)")
+    
+    # Linee Verticali
+    ax.axvline(spot, color="blue", ls="--", lw=1.5, label=f"Spot {spot:.0f}")
+    if flip:
+        ax.axvline(flip, color="purple", ls="-.", lw=1.5, label=f"Flip {flip:.0f}")
 
-    wall_width = spot * 0.006
-    for gw_strike in gw_calls:
-        oi_val = calls.loc[calls["strike"] == gw_strike, "openInterest"].sum()
-        ax.bar(gw_strike, oi_val, color=call_wall_color, alpha=0.9, width=wall_width)
-        ax.text(gw_strike, oi_val, f"GW {int(round(gw_strike))}", color=call_wall_color, fontsize=9.5, ha="center", va="bottom", fontweight="bold")
+    # Evidenzia Walls
+    for w in call_walls:
+        ax.text(w, calls[calls['strike']==w]['openInterest'].values[0], f"C {int(w)}", color="#0d47a1", fontsize=8, ha='center')
+    for w in put_walls:
+        ax.text(w, -puts[puts['strike']==w]['openInterest'].values[0], f"P {int(w)}", color="#e65100", fontsize=8, ha='center', va='top')
 
-    for gw_strike in gw_puts:
-        oi_val = puts.loc[puts["strike"] == gw_strike, "openInterest"].sum()
-        ax.bar(gw_strike, oi_val, color=put_wall_color, alpha=0.9, width=wall_width)
-        ax.text(gw_strike, oi_val, f"GW {int(round(gw_strike))}", color=put_wall_color, fontsize=9.5, ha="center", va="bottom", fontweight="bold")
+    ax.set_xlabel("Strike Price")
+    ax.set_ylabel("Open Interest")
+    ax2.set_ylabel("Gamma Exposure ($ per 1% move)")
+    
+    # Zero line per GEX
+    ax2.axhline(0, color="black", lw=0.5)
+    
+    # Legenda unica un po' tricky
+    lines, labels = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines + lines2, labels + labels2, loc="upper right")
 
-    max_oi = max(puts["openInterest"].max(), calls["openInterest"].max()) if not puts.empty and not calls.empty else 1000
-    if gamma_flip:
-        color_zone = "#b6f5b6" if regime == "LONG" else "#f8c6c6"
-        label_zone = "GAMMA POSITIVO" if regime == "LONG" else "GAMMA NEGATIVO"
-        x_min, x_max = ax.get_xlim()
-        if spot > gamma_flip:
-            ax.fill_betweenx([0, max_oi * 1.2], gamma_flip, x_max, color=color_zone, alpha=0.25)
-        else:
-            ax.fill_betweenx([0, max_oi * 1.2], x_min, gamma_flip, color=color_zone, alpha=0.25)
-        ax.text(x_min, max_oi * 1.05, label_zone, ha="left", color=color_zone, fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    return fig
 
-    ax.axvline(spot, color="green", ls="--", lw=1.5, label=f"Spot {spot:.0f}$")
-    if gamma_flip:
-        ax.axvline(gamma_flip, color="red", ls="--", lw=1.5, label=f"Gamma Flip ≈ {gamma_flip:.0f}$")
+# ---------------------- 4. Streamlit UI ----------------------
 
-    ax.set_xlabel("Strike")
-    ax.set_ylabel("Open Interest (contratti)")
-    ax.set_title(f"{symbol} — Focused GEX Report ({expiry_date})", loc="right", color="#444444", fontsize=12)
-    ax.legend(loc="upper right")
-    ax2.legend(loc="upper left", frameon=False)
-    ax.text(0.98, 0.02, "GEX Focused Pro v18.0", transform=ax.transAxes, ha="right", va="bottom", fontsize=17, color="#555555", alpha=0.35, fontstyle="italic", fontweight="bold")
-
-    return fig, spot, expiry_date, regime, dpi, gamma_flip, gw_calls, gw_puts
-
-
-# ---------------------- Streamlit UI (PERFETTA COME LA VUOI TU) ----------------------
-st.title("GEX Focused Pro v18.0")
-st.markdown("### By Pure Energy 2025")
+st.title("⚡ GEX Focused Pro v18")
+st.markdown("### Analisi Istituzionale Gamma Exposure (Optimized)")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.subheader("Parametri")
-    symbol = st.text_input("Ticker", value="SPY", help="Es. SPY, QQQ, TSLA, NVDA, IWM").upper().strip()
-
-    @st.cache_data(ttl=600)
-    def get_expirations(sym):
+    st.subheader("Parametri Ticker")
+    symbol = st.text_input("Simbolo", value="SPY").upper()
+    
+    spot = get_spot_price(symbol)
+    if spot:
+        st.success(f"Spot: ${spot:.2f}")
         try:
-            return yf.Ticker(sym).options
+            # Carica scadenze
+            tk = yf.Ticker(symbol)
+            exps = tk.options
+            if exps:
+                sel_exp = st.selectbox("Scadenza", exps[:8])
+            else:
+                sel_exp = None
+                st.error("No options found.")
         except:
-            return []
+            sel_exp = None
+    else:
+        st.warning("Ticker non trovato.")
+        sel_exp = None
 
-    expirations = []
-    selected_expiry = None
-    if symbol:
-        with st.spinner("Caricamento scadenze opzioni..."):
-            expirations = get_expirations(symbol)
+    st.markdown("---")
+    st.markdown("#### ⚙️ Configurazione Dealer")
+    
+    # --- MODELLO IBRIDO DI DEFAULT ---
+    # Logica: Istituzionali vendono Call (Dealer Long) e Comprano Put (Dealer Short)
+    c1, c2 = st.columns(2)
+    with c1:
+        dealer_long_call = st.checkbox("Dealer Long CALL (+)", value=True, help="Default attivo: I fondi vendono Call, Dealer comprano.")
+    with c2:
+        dealer_long_put = st.checkbox("Dealer Long PUT (+)", value=False, help="Default spento: I fondi comprano Put (protezione), Dealer vendono (-).")
+    
+    call_sign = 1 if dealer_long_call else -1
+    put_sign = 1 if dealer_long_put else -1
 
-        if not expirations:
-            st.error("Nessuna scadenza opzioni disponibile per questo ticker.")
-        else:
-            exp_options = {}
-            for i, exp in enumerate(expirations[:2]):
-                date_fmt = datetime.strptime(exp, "%Y-%m-%d").strftime("%d %b %Y")
-                label = f"1ª scadenza — {date_fmt} (più vicina)" if i == 0 else f"2ª scadenza — {date_fmt}"
-                exp_options[label] = exp
+    if call_sign == 1 and put_sign == -1:
+        st.caption("✅ Configurazione Standard (Flip Attivo)")
+    elif call_sign == 1 and put_sign == 1:
+        st.caption("⚠️ Configurazione 'Pure Long' (Mercato Bloccato)")
+    else:
+        st.caption("⚠️ Configurazione Personalizzata")
 
-            selected_label = st.selectbox(
-                "Scadenza da analizzare",
-                options=list(exp_options.keys()),
-                index=0,
-                help="Scegli tra weekly (1ª) e monthly (2ª)"
-            )
-            selected_expiry = exp_options[selected_label]
-            st.success(f"Scadenza selezionata: **{datetime.strptime(selected_expiry, '%Y-%m-%d').strftime('%d %B %Y')}**")
+    st.markdown("---")
+    range_pct = st.slider("Range Analisi %", 5, 50, 15)
+    min_oi_ratio = st.slider("Filtro Min OI %", 5, 50, 15) / 100.0
+    dist_min = st.slider("Distanza Walls %", 1, 5, 2)
 
-    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
-    # ECCO TUTTO CIÒ CHE HAI CHIESTO:
-    range_pct = st.slider("Range ±%", 10, 60, 20, help="Range di strike da analizzare")                    # 20%
-    min_oi_ratio = st.slider("Min OI % del max", 5, 80, 20, help="Filtra contratti con OI basso") / 100   # 20%
-    dist_min = st.slider("Distanza min % tra Walls", 1, 15, 2, help="Distanza minima tra Gamma Walls") / 100   # 2%
-
-    st.markdown("#### Segno GEX (Dealer Positioning)")
-    col_sign1, col_sign2 = st.columns(2)
-    with col_sign1:
-        call_sign = 1 if st.checkbox("CALL vendute dai dealer (+)", value=False) else -1   # SPENTA
-    with col_sign2:
-        put_sign = 1 if st.checkbox("PUT vendute dai dealer (+)", value=False) else -1    # SPENTA
-    # ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
-
-    run = st.button("Calcola GEX Focused v18", type="primary", use_container_width=True, disabled=not selected_expiry)
+    btn_calc = st.button("🚀 Calcola GEX v18", type="primary", use_container_width=True)
 
 with col2:
-    if run and selected_expiry:
-        with st.spinner(f"Analisi {symbol} - {selected_expiry} in corso..."):
-            try:
-                fig, spot, expiry, regime, dpi, gamma_flip, gw_calls, gw_puts = compute_gex_dpi_focused(
-                    symbol, selected_expiry, range_pct, min_oi_ratio, dist_min, call_sign, put_sign
+    if btn_calc and spot and sel_exp:
+        with st.spinner("Calcolo GEX Vettoriale in corso..."):
+            # 1. Get Data
+            calls, puts, err = get_option_data(symbol, sel_exp, spot, range_pct)
+            
+            if err:
+                st.error(err)
+            else:
+                # 2. Calc GEX
+                data_res, err_calc = calculate_gex_profile(
+                    calls, puts, spot, sel_exp, 
+                    call_sign=call_sign, 
+                    put_sign=put_sign, 
+                    min_oi_ratio=min_oi_ratio
                 )
-                st.pyplot(fig)
-                plt.close(fig)
-
-                buf = BytesIO()
-                fig.savefig(buf, format="png", dpi=180, bbox_inches="tight")
-                buf.seek(0)
-                b64 = base64.b64encode(buf.read()).decode()
-                href = f'<a href="data:image/png;base64,{b64}" download="{symbol}_GEX_{selected_expiry}_v18.png">Scarica Report PNG (v18)</a>'
-                st.markdown(href, unsafe_allow_html=True)
-
-            except Exception as e:
-                st.error(f"Errore durante il calcolo: {str(e)}")
-    else:
-        st.info("Inserisci un ticker valido e premi **Calcola GEX Focused v18**")
+                
+                if err_calc:
+                    st.error(err_calc)
+                else:
+                    # 3. Plot
+                    fig = plot_dashboard(symbol, data_res, spot, sel_exp, dist_min)
+                    st.pyplot(fig)
+                    
+                    # 4. Download
+                    buf = BytesIO()
+                    fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
+                    st.download_button(
+                        label="💾 Scarica Report PNG",
+                        data=buf.getvalue(),
+                        file_name=f"GEX_v18_{symbol}_{sel_exp}.png",
+                        mime="image/png",
+                        use_container_width=True
+                    )
