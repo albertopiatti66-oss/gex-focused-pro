@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-GEX Focused Pro v20.0 (Positioning Edition - Stable Fix)
-- CORE UPGRADE: Multi-Expiry Aggregation for Swing/Positioning Trading.
-- WALLS LOGIC: Net GEX (OI * Gamma) on aggregated open interest.
-- VISUALS: Elegant Bicolor Line with Crash Protection.
+GEX Positioning Pro v20.0 (Ethereal Edition)
+- VISUALS: Light Dotted GEX Line, Zone-based Background Coloring.
 """
 
 import streamlit as st
@@ -15,7 +13,7 @@ import matplotlib.patches as patches
 from matplotlib import gridspec
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
-from matplotlib.collections import LineCollection
+# Non serve più LineCollection per questa versione
 from scipy.stats import norm
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -283,52 +281,42 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax = fig.add_subplot(gs[0])
     bar_width = spot * 0.007
     
-    # 1. VISUAL: OI Aggregato (Colori Professionali)
-    ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.4, width=bar_width, label="Put OI (Total)")
-    ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.4, width=bar_width, label="Call OI (Total)")
+    # Limiti per lo sfondo
+    x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
+    x_max = max(calls_agg["strike"].max(), puts_agg["strike"].max())
     
-    # Walls
+    # --- MODIFICA VISUALE 1: SFONDO REGIME (Verdino vs Rosino) ---
+    if final_flip:
+        # Zona Sinistra (Strike < Flip) -> Rosino (Short Gamma / Volatility)
+        ax.axvspan(x_min, final_flip, facecolor='#FFEBEE', alpha=0.4, zorder=0) 
+        # Zona Destra (Strike > Flip) -> Verdino (Long Gamma / Stability)
+        ax.axvspan(final_flip, x_max, facecolor='#E8F5E9', alpha=0.4, zorder=0)
+    
+    # OI Aggregato (Barre ancora più soft)
+    ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.35, width=bar_width, label="Put OI", zorder=2)
+    ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.35, width=bar_width, label="Call OI", zorder=2)
+    
+    # Walls (Colori più intensi ma professionali)
     for w in call_walls:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#21618C", alpha=0.9, width=bar_width) 
+        ax.bar(w, val, color="#21618C", alpha=0.8, width=bar_width, zorder=3) 
     for w in put_walls:
         val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#D35400", alpha=0.9, width=bar_width) 
+        ax.bar(w, val, color="#D35400", alpha=0.8, width=bar_width, zorder=3) 
 
     # 2. VISUAL: Profilo GEX Netto
     ax2 = ax.twinx()
-    
-    # Pulizia preventiva per evitare crash grafici
     gex_clean = gex_strike.dropna().sort_values("strike")
     
-    ax2.fill_between(gex_clean["strike"], gex_clean["GEX"], 0, where=(gex_clean["GEX"]>=0), color="#2ECC71", alpha=0.05, interpolate=True)
-    ax2.fill_between(gex_clean["strike"], gex_clean["GEX"], 0, where=(gex_clean["GEX"]<0), color="#E74C3C", alpha=0.05, interpolate=True)
+    # --- MODIFICA VISUALE 2: LINEA GRIGIO CHIARO A PUNTINI ---
+    # Rimosso fill_between e LineCollection. Solo una linea pulita.
+    ax2.plot(gex_clean["strike"], gex_clean["GEX"], color='#999999', linestyle=':', linewidth=2, label="Net GEX Structure", zorder=5)
     
-    x_vals = gex_clean["strike"].values
-    y_vals = gex_clean["GEX"].values
-    
-    # --- CRASH PROTECTION PER LINECOLLECTION ---
-    # Se abbiamo abbastanza dati, usa la linea bicolore elegante. Altrimenti fallback.
-    if len(x_vals) > 1:
-        points = np.array([x_vals, y_vals]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        
-        color_pos = "#2E8B57" # SeaGreen
-        color_neg = "#C0392B" # Dark Red
-        colors = [color_pos if (y_vals[i] + y_vals[i+1])/2 >= 0 else color_neg for i in range(len(y_vals)-1)]
-        
-        lc = LineCollection(segments, colors=colors, linewidth=1.8)
-        ax2.add_collection(lc)
-        ax2.autoscale_view()
-    else:
-        # Fallback sicuro
-        ax2.plot(x_vals, y_vals, color="#555555", lw=1.5, label="Net GEX")
-
-    ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot")
+    ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot", zorder=6)
     if final_flip:
-        ax.axvline(final_flip, color="#7F8C8D", ls="-.", lw=1.2, label="Flip")
+        ax.axvline(final_flip, color="#7F8C8D", ls="-.", lw=1.2, label="Flip", zorder=6)
 
-    # Etichette
+    # Etichette (Box bianchi puliti)
     max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100
     y_offset = max_y * 0.03
     bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#D5D8DC", alpha=0.95)
@@ -340,21 +328,23 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
         val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
         ax.text(w, val - y_offset, f"SUP {int(w)}", color="#D35400", fontsize=8, fontweight='bold', ha='center', va='top', bbox=bbox_props, zorder=20)
 
-    ax.set_ylabel("Aggregated Open Interest", fontsize=10, fontweight='bold', color="#555")
-    ax2.set_ylabel("Net Gamma Exposure", fontsize=10, color="#555")
-    ax2.axhline(0, color="#BDC3C7", lw=0.5) 
+    ax.set_ylabel("Aggregated Open Interest", fontsize=10, fontweight='bold', color="#777")
+    ax2.set_ylabel("Net Gamma Exposure", fontsize=10, color="#777")
+    ax2.axhline(0, color="#BDC3C7", lw=0.5, ls='-') 
     
-    ax.text(0.99, 0.02, "GEX Positioning Pro v20.0", transform=ax.transAxes, ha="right", va="bottom", fontsize=12, color="#CCCCCC", fontweight="bold")
+    # Grid molto leggera
+    ax.grid(True, which='major', axis='both', color='#EEEEEE', linestyle='-', linewidth=0.5, zorder=0)
 
     legend_elements = [
         Patch(facecolor='#4682B4', edgecolor='none', label='Total Call OI', alpha=0.5),
         Patch(facecolor='#DEB887', edgecolor='none', label='Total Put OI', alpha=0.5),
         Line2D([0], [0], color='#2980B9', lw=1.0, ls='--', label=f'Spot {spot:.0f}'),
-        Line2D([0], [0], color='#555555', lw=1.8, label='Net GEX Structure'),
+        Line2D([0], [0], color='#999999', lw=2, ls=':', label='Net GEX Structure'),
     ]
     if final_flip: legend_elements.append(Line2D([0], [0], color='#7F8C8D', lw=1.2, ls='-.', label=f'Flip {final_flip:.0f}'))
-    ax.legend(handles=legend_elements, loc='upper left', framealpha=0.9, fontsize=9, edgecolor="#EEEEEE")
-    ax.set_title(f"{symbol} STRUCTURAL GEX PROFILE (Next {n_exps} Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#333")
+    
+    ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=9, edgecolor="#EEEEEE")
+    ax.set_title(f"{symbol} STRUCTURAL GEX PROFILE (Next {n_exps} Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#444")
 
     # --- SUBPLOT 2: REPORT MINIMALISTA ---
     ax_rep = fig.add_subplot(gs[1])
@@ -438,7 +428,6 @@ with col2:
                 if err_calc:
                     st.error(err_calc)
                 else:
-                    # GESTIONE ERRORI GRAFICI
                     try:
                         fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_min)
                         st.pyplot(fig)
@@ -449,4 +438,3 @@ with col2:
                         st.download_button("💾 Scarica Report Positioning", buf.getvalue(), f"GEX_STRUCT_{symbol}.png", "image/png", use_container_width=True)
                     except Exception as e:
                         st.error(f"Errore durante la creazione del grafico: {e}")
-                        st.info("Prova a cambiare ticker o ridurre il range %.")
