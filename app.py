@@ -15,7 +15,7 @@ import matplotlib.patches as patches
 from matplotlib import gridspec
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
-from matplotlib.collections import LineCollection # <--- NUOVA IMPORTAZIONE NECESSARIA
+from matplotlib.collections import LineCollection
 from scipy.stats import norm
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -42,7 +42,6 @@ def get_spot_price(ticker):
         return None
 
 def vectorized_bs_gamma(S, K, T, r, sigma):
-    # Evita divisioni per zero o tempi negativi
     T = np.maximum(T, 0.001) 
     sigma = np.maximum(sigma, 0.01)
     S = float(S)
@@ -53,29 +52,22 @@ def vectorized_bs_gamma(S, K, T, r, sigma):
         gamma = pdf / (S * sigma * np.sqrt(T))
     return np.nan_to_num(gamma)
 
-@st.cache_data(ttl=600) # Cache più lunga (10 min) dato che scarichiamo più dati
+@st.cache_data(ttl=600)
 def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
-    """
-    Scarica le prime n_expirations e le aggrega in un unico DataFrame.
-    """
     try:
         tk = yf.Ticker(symbol)
         exps = tk.options
         if not exps: return None, None, "Nessuna scadenza trovata."
         
-        # Prendiamo le prime N scadenze (Positioning View)
         target_exps = exps[:n_expirations]
-        
         all_calls = []
         all_puts = []
         
-        # Barra progresso (visibile solo se chiamato da UI, qui logica interna)
         progress_text = "Scaricamento scadenze in corso..."
         my_bar = st.progress(0, text=progress_text)
         
         for i, exp in enumerate(target_exps):
             try:
-                # Aggiorna barra
                 pct = int((i / len(target_exps)) * 100)
                 my_bar.progress(pct, text=f"Scaricamento scadenza: {exp}")
                 
@@ -88,15 +80,11 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
                 
                 all_calls.append(c)
                 all_puts.append(p)
-                
-                # Pausa anti-ban Yahoo
                 time.sleep(0.15) 
-                
             except Exception:
                 continue
         
-        my_bar.empty() # Rimuovi barra alla fine
-        
+        my_bar.empty()
         if not all_calls: return None, None, "Errore recupero chain."
 
         calls = pd.concat(all_calls, ignore_index=True)
@@ -105,19 +93,15 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
     except Exception as e:
         return None, None, f"Errore download dati: {e}"
 
-    # Pulizia Dati
     for df in [calls, puts]:
         df.fillna(0, inplace=True)
         df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
         df["openInterest"] = pd.to_numeric(df["openInterest"], errors="coerce")
         df["impliedVolatility"] = pd.to_numeric(df["impliedVolatility"], errors="coerce")
-        # Fix IV a 0 -> mettiamo default 30% per evitare crash gamma
         df["impliedVolatility"] = df["impliedVolatility"].replace(0, 0.3)
 
-    # Filtro Range Prezzo (per alleggerire i calcoli)
     lower_bound = spot_price * (1 - range_pct/100)
     upper_bound = spot_price * (1 + range_pct/100)
-    
     calls = calls[(calls["strike"] >= lower_bound) & (calls["strike"] <= upper_bound)]
     puts = puts[(puts["strike"] >= lower_bound) & (puts["strike"] <= upper_bound)]
 
@@ -127,38 +111,27 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
     risk_free = 0.05
     now_dt = datetime.now(timezone.utc)
 
-    # Funzione helper per calcolare T (anni) per ogni riga
     def get_time_to_expiry(exp_str):
         try:
             exp_dt = datetime.strptime(str(exp_str), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            # Aggiungiamo 16 ore per simulare la chiusura alle 16:00 NY
             exp_dt = exp_dt + timedelta(hours=16)
             seconds = (exp_dt - now_dt).total_seconds()
-            return max(seconds / 31536000.0, 0.001) # Minimo un millesimo di anno
+            return max(seconds / 31536000.0, 0.001)
         except:
             return 0.001
 
-    # Calcolo T vettorializzato (applicato a ogni riga in base alla sua scadenza)
     calls["T"] = calls["expiry"].apply(get_time_to_expiry)
     puts["T"] = puts["expiry"].apply(get_time_to_expiry)
 
-    # Filtro OI "Rumore"
-    max_oi = max(calls["openInterest"].max(), puts["openInterest"].max()) if not calls.empty else 0
-    threshold = max_oi * min_oi_ratio
-    
-    # Calcolo Gamma Row-by-Row
     calls["gamma_val"] = vectorized_bs_gamma(spot, calls["strike"].values, calls["T"].values, risk_free, calls["impliedVolatility"].values)
     puts["gamma_val"] = vectorized_bs_gamma(spot, puts["strike"].values, puts["T"].values, risk_free, puts["impliedVolatility"].values)
 
-    # GEX = OI * Gamma * Spot * 100
     calls["GEX"] = call_sign * calls["gamma_val"] * spot * calls["openInterest"].values * 100
     puts["GEX"] = put_sign * puts["gamma_val"] * spot * puts["openInterest"].values * 100
 
-    # Aggregazione per Strike (Somma di tutte le scadenze)
     gex_df = pd.concat([calls[["strike", "GEX"]], puts[["strike", "GEX"]]])
     gex_by_strike = gex_df.groupby("strike")["GEX"].sum().reset_index().sort_values("strike")
 
-    # Totali
     total_call_gex = calls["GEX"].sum()
     total_put_gex = puts["GEX"].sum()
     total_gex = total_call_gex + total_put_gex
@@ -166,7 +139,6 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
     abs_total = abs(total_call_gex) + abs(total_put_gex)
     net_gamma_bias = (total_call_gex / abs_total * 100) if abs_total > 0 else 0
 
-    # Calcolo Flip (Weighted Average)
     gamma_flip = None
     if call_sign == 1 and put_sign == -1 and abs(total_gex) > 1000:
         relevant_gex = gex_by_strike[gex_by_strike["GEX"].abs() > (gex_by_strike["GEX"].abs().max() * 0.05)]
@@ -210,15 +182,14 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
     net_bias = data['net_gamma_bias']
     effective_flip = synced_flip
     
-    # Logica Regime
+    # Colori per il testo/status
     regime_status = "LONG GAMMA" if tot_gex > 0 else "SHORT GAMMA"
-    regime_color = "#1b5e20" if tot_gex > 0 else "#b71c1c"
+    regime_color = "#2E8B57" if tot_gex > 0 else "#C0392B" # Colori più eleganti
     
     if net_bias > 30: bias_desc = f"Dominanza Call (Strutturale)"
     elif net_bias < -30: bias_desc = f"Dominanza Put (Strutturale)"
     else: bias_desc = f"Equilibrio / Neutrale"
 
-    # Logica Safe Zone
     safe_zone = False
     if effective_flip is not None:
         if spot > effective_flip:
@@ -230,31 +201,27 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
     else:
         flip_desc = "Flip indefinito (Mercato confuso)"
 
-    # Logica Narrativa
     scommessa = ""
-    colore_bg = "#ffffff"
+    # Nota: impostiamo bordino per l'accento, il colore_bg sarà bianco fisso nel plot
     bordino = "grey"
 
     if safe_zone and tot_gex > 0:
         scommessa = "📈 POSITIONING: RIALZISTA / BUY THE DIP"
         dettaglio = "Mercato in regime Long Gamma strutturale. I cali tendono ad essere comprati dai Dealer. I muri Call agiscono da magneti/target."
-        colore_bg = "#e8f5e9"
-        bordino = "#2e7d32"
+        bordino = "#2E8B57" # SeaGreen
     elif not safe_zone and tot_gex < 0:
         scommessa = "📉 POSITIONING: RIBASSISTA / HEDGE"
         dettaglio = "Regime Short Gamma sotto il Flip. I Dealer accelerano i ribassi. Rischio di movimenti violenti verso i Put Wall inferiori."
-        colore_bg = "#ffebee"
-        bordino = "#c62828"
+        bordino = "#C0392B" # Muted Red
     elif safe_zone and tot_gex < 0:
         scommessa = "⚠️ POSITIONING: CAUTO (Possibile Top)"
         dettaglio = "Siamo sopra il Flip, ma il Gamma totale è negativo. Indica che la salita è fragile e priva di supporto strutturale. Occhio ai reversal."
-        colore_bg = "#fff3e0"
-        bordino = "#ef6c00"
+        bordino = "#E67E22" # Muted Orange
     else:
         scommessa = "⚖️ POSITIONING: LATERALE / CHOPPY"
         flip_str = f"{effective_flip:.0f}" if effective_flip is not None else "N/D"
         dettaglio = f"Prezzo intrappolato sotto il Flip ({flip_str}) ma con Gamma positivo residuo. Mercato indeciso, trading range probabile."
-        colore_bg = "#f5f5f5"
+        bordino = "#95A5A6" # Grey
 
     cw = min(call_walls) if call_walls else None
     pw = max(put_walls) if put_walls else None
@@ -271,7 +238,6 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
         "pw": pw_txt,
         "scommessa": scommessa,
         "dettaglio": dettaglio,
-        "colore_bg": colore_bg,
         "bordino": bordino
     }
 
@@ -286,7 +252,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     local_flip = find_zero_crossing(gex_strike, spot)
     final_flip = local_flip if local_flip else data["gamma_flip"]
 
-    # --- WALLS LOGIC ---
     calls_agg = calls.groupby("strike")[["openInterest", "GEX"]].sum().reset_index()
     puts_agg = puts.groupby("strike")[["openInterest", "GEX"]].sum().reset_index()
     
@@ -320,99 +285,107 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax = fig.add_subplot(gs[0])
     bar_width = spot * 0.007
     
-    # OI Aggregato
-    ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#ffcc80", alpha=0.3, width=bar_width, label="Put OI (Total)")
-    ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#90caf9", alpha=0.3, width=bar_width, label="Call OI (Total)")
+    # 1. VISUAL: OI Aggregato (Colori Professionali)
+    # Burlywood (Sabbia/Oro spento) per Puts, SteelBlue (Blu aviazione) per Calls
+    ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.4, width=bar_width, label="Put OI (Total)")
+    ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.4, width=bar_width, label="Call OI (Total)")
     
+    # Walls (Toni più saturi degli stessi colori)
     for w in call_walls:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#0d47a1", alpha=0.9, width=bar_width)
+        ax.bar(w, val, color="#21618C", alpha=0.9, width=bar_width) # Dark Steel Blue
     for w in put_walls:
         val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#e65100", alpha=0.9, width=bar_width)
+        ax.bar(w, val, color="#D35400", alpha=0.9, width=bar_width) # Pumpkin/Rust
 
-    # Profilo GEX Netto Aggregato (Aree)
+    # 2. VISUAL: Profilo GEX Netto (Linee più fini ed eleganti)
     ax2 = ax.twinx()
-    ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]>=0), color="green", alpha=0.10, interpolate=True)
-    ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]<0), color="red", alpha=0.10, interpolate=True)
+    # Aree molto trasparenti (Alpha 0.05) per non disturbare
+    ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]>=0), color="#2ECC71", alpha=0.05, interpolate=True)
+    ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]<0), color="#E74C3C", alpha=0.05, interpolate=True)
     
-    # --- MODIFICA VISUALE: LINEA BICOLORE (Verde Scuro / Rosso Scuro) ---
+    # Linea Bicolore Elegante (Verde Bosco / Rosso Mattone) - Spessore 1.8
     x_vals = gex_strike["strike"].values
     y_vals = gex_strike["GEX"].values
     
-    # Creazione segmenti per LineCollection
     points = np.array([x_vals, y_vals]).T.reshape(-1, 1, 2)
     segments = np.concatenate([points[:-1], points[1:]], axis=1)
     
-    # Logica Colore: Se il valore medio del segmento è positivo -> Verde Scuro, altrimenti Rosso Scuro
-    colors = ["#006400" if (y_vals[i] + y_vals[i+1])/2 >= 0 else "#8B0000" for i in range(len(y_vals)-1)]
+    # Colori professionali per la linea
+    color_pos = "#2E8B57" # SeaGreen
+    color_neg = "#C0392B" # Dark Red
+    colors = [color_pos if (y_vals[i] + y_vals[i+1])/2 >= 0 else color_neg for i in range(len(y_vals)-1)]
     
-    lc = LineCollection(segments, colors=colors, linewidth=2.5)
+    lc = LineCollection(segments, colors=colors, linewidth=1.8)
     ax2.add_collection(lc)
-    ax2.autoscale_view() # Importante per aggiornare i limiti dell'asse twinx
-    # ---------------------------------------------------------------------
+    ax2.autoscale_view()
     
-    ax.axvline(spot, color="blue", ls="--", lw=1.2, label="Spot")
+    ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot")
     if final_flip:
-        ax.axvline(final_flip, color="red", ls="-.", lw=1.5, label="Flip (Aggregated)")
+        ax.axvline(final_flip, color="#7F8C8D", ls="-.", lw=1.2, label="Flip")
 
-    # Etichette
+    # Etichette (Box bianchi puliti)
     max_y = calls_agg["openInterest"].max()
     y_offset = max_y * 0.03
-    bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#cccccc", alpha=0.9)
+    bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#D5D8DC", alpha=0.95)
 
     for w in call_walls:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
-        ax.text(w, val + y_offset, f"RES {int(w)}", color="#0d47a1", fontsize=9, fontweight='bold', ha='center', va='bottom', bbox=bbox_props, zorder=20)
+        ax.text(w, val + y_offset, f"RES {int(w)}", color="#21618C", fontsize=8, fontweight='bold', ha='center', va='bottom', bbox=bbox_props, zorder=20)
     for w in put_walls:
         val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
-        ax.text(w, val - y_offset, f"SUP {int(w)}", color="#e65100", fontsize=9, fontweight='bold', ha='center', va='top', bbox=bbox_props, zorder=20)
+        ax.text(w, val - y_offset, f"SUP {int(w)}", color="#D35400", fontsize=8, fontweight='bold', ha='center', va='top', bbox=bbox_props, zorder=20)
 
-    ax.set_ylabel("Aggregated Open Interest", fontsize=11, fontweight='bold', color="#444")
-    ax2.set_ylabel("Net Gamma Exposure (Combined)")
-    ax2.axhline(0, color="grey", lw=0.5)
-    ax.text(0.99, 0.02, "GEX Positioning Pro v20.0", transform=ax.transAxes, ha="right", va="bottom", fontsize=14, color="#999999", fontweight="bold", alpha=0.5)
+    ax.set_ylabel("Aggregated Open Interest", fontsize=10, fontweight='bold', color="#555")
+    ax2.set_ylabel("Net Gamma Exposure", fontsize=10, color="#555")
+    ax2.axhline(0, color="#BDC3C7", lw=0.5) # Asse zero grigio chiaro
+    
+    # Watermark discreto
+    ax.text(0.99, 0.02, "GEX Positioning Pro v20.0", transform=ax.transAxes, ha="right", va="bottom", fontsize=12, color="#CCCCCC", fontweight="bold")
 
     legend_elements = [
-        Patch(facecolor='#90caf9', edgecolor='none', label='Total Call OI'),
-        Patch(facecolor='#ffcc80', edgecolor='none', label='Total Put OI'),
-        Line2D([0], [0], color='blue', lw=1.5, ls='--', label=f'Spot {spot:.0f}'),
-        Line2D([0], [0], color='#444444', lw=2.5, label='Net GEX Structure'), # Colore legenda neutro
+        Patch(facecolor='#4682B4', edgecolor='none', label='Total Call OI', alpha=0.5),
+        Patch(facecolor='#DEB887', edgecolor='none', label='Total Put OI', alpha=0.5),
+        Line2D([0], [0], color='#2980B9', lw=1.0, ls='--', label=f'Spot {spot:.0f}'),
+        Line2D([0], [0], color='#555555', lw=1.8, label='Net GEX Structure'),
     ]
-    if final_flip: legend_elements.append(Line2D([0], [0], color='red', lw=1.5, ls='-.', label=f'Flip {final_flip:.0f}'))
-    ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=10)
-    ax.set_title(f"{symbol} STRUCTURAL GEX PROFILE (Next {n_exps} Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif')
+    if final_flip: legend_elements.append(Line2D([0], [0], color='#7F8C8D', lw=1.2, ls='-.', label=f'Flip {final_flip:.0f}'))
+    ax.legend(handles=legend_elements, loc='upper left', framealpha=0.9, fontsize=9, edgecolor="#EEEEEE")
+    ax.set_title(f"{symbol} STRUCTURAL GEX PROFILE (Next {n_exps} Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#333")
 
-    # --- SUBPLOT 2: REPORT ---
+    # --- SUBPLOT 2: REPORT MINIMALISTA ---
     ax_rep = fig.add_subplot(gs[1])
     ax_rep.axis("off")
     
-    ax_rep.text(0.02, 0.88, f"SPOT: {rep['spot']:.2f}", fontsize=12, fontweight='bold', color="#222", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(0.20, 0.88, "|", fontsize=12, color="#aaa", transform=ax_rep.transAxes)
-    ax_rep.text(0.22, 0.88, f"REGIME: ", fontsize=12, fontweight='bold', color="#222", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(0.33, 0.88, rep['regime'], fontsize=12, fontweight='bold', color=rep['regime_color'], fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(0.53, 0.88, "|", fontsize=12, color="#aaa", transform=ax_rep.transAxes)
-    ax_rep.text(0.55, 0.88, f"BIAS: {rep['bias']}", fontsize=12, fontweight='bold', color="#222", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # Header Dati
+    ax_rep.text(0.02, 0.88, f"SPOT: {rep['spot']:.2f}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.20, 0.88, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
+    ax_rep.text(0.22, 0.88, f"REGIME: ", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.33, 0.88, rep['regime'], fontsize=11, fontweight='bold', color=rep['regime_color'], fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.53, 0.88, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
+    ax_rep.text(0.55, 0.88, f"BIAS: {rep['bias']}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
     flip_text = f"FLIP STRUTTURALE: {rep['flip_desc']}"
     levels_text = f"RESISTENZA CHIAVE: {rep['cw']}   |   SUPPORTO CHIAVE: {rep['pw']}"
     
-    ax_rep.text(0.02, 0.72, flip_text, fontsize=11, color="#444", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(0.02, 0.60, levels_text, fontsize=11, color="#444", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.02, 0.72, flip_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.02, 0.60, levels_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
     
+    # Box Riassuntivo: BIANCO con Bordo Sottile (Stile Card)
     box_x, box_y = 0.02, 0.05
     box_w, box_h = 0.96, 0.45
-    rect = patches.FancyBboxPatch((box_x, box_y), box_w, box_h, boxstyle="round,pad=0.03", linewidth=1, edgecolor="#dddddd", facecolor=rep['colore_bg'], transform=ax_rep.transAxes, zorder=1)
+    rect = patches.FancyBboxPatch((box_x, box_y), box_w, box_h, boxstyle="round,pad=0.03", linewidth=0.8, edgecolor="#DDDDDD", facecolor="#FFFFFF", transform=ax_rep.transAxes, zorder=1)
     ax_rep.add_patch(rect)
-    accent_rect = patches.Rectangle((box_x, box_y), 0.015, box_h, facecolor=rep['bordino'], edgecolor="none", transform=ax_rep.transAxes, zorder=2)
+    
+    # Barra di accento laterale (indica il sentiment con il colore)
+    accent_rect = patches.Rectangle((box_x, box_y), 0.010, box_h, facecolor=rep['bordino'], edgecolor="none", transform=ax_rep.transAxes, zorder=2)
     ax_rep.add_patch(accent_rect)
     
     sintesi_title = rep['scommessa']
-    sintesi_desc = textwrap.fill(rep['dettaglio'], width=110)
+    sintesi_desc = textwrap.fill(rep['dettaglio'], width=115)
     
-    # Coordinate corrette per evitare sovrapposizioni
-    ax_rep.text(box_x + 0.04, box_y + 0.35, sintesi_title, fontsize=14, fontweight='bold', color="#222", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(box_x + 0.04, box_y + 0.28, sintesi_desc, fontsize=11, color="#333", fontfamily='sans-serif', va='top', transform=ax_rep.transAxes)
+    ax_rep.text(box_x + 0.035, box_y + 0.35, sintesi_title, fontsize=13, fontweight='bold', color="#2C3E50", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(box_x + 0.035, box_y + 0.28, sintesi_desc, fontsize=10, color="#444", fontfamily='sans-serif', va='top', transform=ax_rep.transAxes)
 
     plt.tight_layout()
     return fig
