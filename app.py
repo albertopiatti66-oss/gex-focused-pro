@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning Pro v20.0 (Percentage Bias Edition)
-- VISUALS: Light Dotted GEX Line.
-- REGIME MAP: Adaptive background coloring.
-- DATA: Bias percentage added back to the report.
+GEX Positioning Pro v20.0 (Logic Fix Edition)
+- FIX: Coerenza matematica tra Regime Gamma e Bias.
+- FIX: Calcolo percentuale Netta (-100% a +100%).
 """
 
 import streamlit as st
@@ -135,8 +134,12 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
     total_put_gex = puts["GEX"].sum()
     total_gex = total_call_gex + total_put_gex
     
+    # --- FIX LOGICA BIAS ---
+    # Calcoliamo la percentuale NETTA.
+    # Se Total GEX è negativo, il bias sarà negativo (es. -33% Put Dom).
+    # Se Total GEX è positivo, il bias sarà positivo (es. +20% Call Dom).
     abs_total = abs(total_call_gex) + abs(total_put_gex)
-    net_gamma_bias = (total_call_gex / abs_total * 100) if abs_total > 0 else 0
+    net_gamma_bias = (total_gex / abs_total * 100) if abs_total > 0 else 0
 
     gamma_flip = None
     if call_sign == 1 and put_sign == -1 and abs(total_gex) > 1000:
@@ -184,10 +187,11 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
     regime_status = "LONG GAMMA" if tot_gex > 0 else "SHORT GAMMA"
     regime_color = "#2E8B57" if tot_gex > 0 else "#C0392B"
     
-    # --- MODIFICA: Aggiunta la percentuale nel testo del Bias ---
-    if net_bias > 30: 
+    # --- FIX DESCRIZIONE BIAS ---
+    # Ora net_bias va da -100 a +100.
+    if net_bias > 5: 
         bias_desc = f"Dominanza Call (+{net_bias:.1f}%)"
-    elif net_bias < -30: 
+    elif net_bias < -5: 
         bias_desc = f"Dominanza Put ({net_bias:.1f}%)"
     else: 
         bias_desc = f"Equilibrio ({net_bias:.1f}%)"
