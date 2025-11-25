@@ -343,7 +343,9 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax2 = ax.twinx()
     ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]>=0), color="green", alpha=0.10, interpolate=True)
     ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]<0), color="red", alpha=0.10, interpolate=True)
-    ax2.plot(gex_strike["strike"], gex_strike["GEX"], color="#555555", lw=1.5, ls="-", label="Aggregated Net GEX")
+    
+    # --- MODIFICA 1: Linea GEX molto più chiara (Nera e spessa) ---
+    ax2.plot(gex_strike["strike"], gex_strike["GEX"], color="black", lw=2.5, ls="-", label="Aggregated Net GEX")
     
     ax.axvline(spot, color="blue", ls="--", lw=1.2, label="Spot")
     if final_flip:
@@ -370,7 +372,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
         Patch(facecolor='#90caf9', edgecolor='none', label='Total Call OI'),
         Patch(facecolor='#ffcc80', edgecolor='none', label='Total Put OI'),
         Line2D([0], [0], color='blue', lw=1.5, ls='--', label=f'Spot {spot:.0f}'),
-        Line2D([0], [0], color='#555555', lw=1.5, label='Net GEX Structure'),
+        Line2D([0], [0], color='black', lw=2.5, label='Net GEX Structure'),
     ]
     if final_flip: legend_elements.append(Line2D([0], [0], color='red', lw=1.5, ls='-.', label=f'Flip {final_flip:.0f}'))
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=10)
@@ -400,10 +402,15 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     accent_rect = patches.Rectangle((box_x, box_y), 0.015, box_h, facecolor=rep['bordino'], edgecolor="none", transform=ax_rep.transAxes, zorder=2)
     ax_rep.add_patch(accent_rect)
     
+    # --- MODIFICA 2: Sistemazione spaziatura testo Report per evitare sovrapposizioni ---
     sintesi_title = rep['scommessa']
-    sintesi_desc = textwrap.fill(rep['dettaglio'], width=105)
-    ax_rep.text(box_x + 0.04, box_y + 0.30, sintesi_title, fontsize=15, fontweight='bold', color="#222", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(box_x + 0.04, box_y + 0.15, sintesi_desc, fontsize=12, color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    sintesi_desc = textwrap.fill(rep['dettaglio'], width=110) # Width leggermente aumentato
+    
+    # Titolo spostato più in alto
+    ax_rep.text(box_x + 0.04, box_y + 0.35, sintesi_title, fontsize=14, fontweight='bold', color="#222", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    
+    # Descrizione ancorata in alto (va='top') subito sotto il titolo
+    ax_rep.text(box_x + 0.04, box_y + 0.28, sintesi_desc, fontsize=11, color="#333", fontfamily='sans-serif', va='top', transform=ax_rep.transAxes)
 
     plt.tight_layout()
     return fig
