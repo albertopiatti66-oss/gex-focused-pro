@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning Pro v20.1 (Swing Ready Edition)
+GEX Positioning  v20 (Swing Ready Edition)
 - FIX: Selezione scadenze intelligente (0-45gg).
 - FIX: Filtro dati "spazzatura" (prezzi < 0.01 o zero bid).
 - FIX: Volatilità Implicita dinamica (media strike attivi).
@@ -23,7 +23,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning Pro v20.1", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning  v20", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI (AGGREGATI)
