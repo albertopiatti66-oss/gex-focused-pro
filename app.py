@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning Pro v20.0 (Ethereal Edition)
-- VISUALS: Light Dotted GEX Line, Zone-based Background Coloring.
+GEX Positioning Pro v20.0 (Adaptive Clean Edition)
+- VISUALS: Light Dotted GEX Line.
+- REGIME MAP: Single-side background coloring based on Global GEX Regime.
 """
 
 import streamlit as st
@@ -13,7 +14,6 @@ import matplotlib.patches as patches
 from matplotlib import gridspec
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
-# Non serve più LineCollection per questa versione
 from scipy.stats import norm
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -244,6 +244,7 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
 def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     calls, puts = data["calls"], data["puts"]
     gex_strike = data["gex_by_strike"]
+    total_gex = data['total_gex'] # Recupero il Total GEX per la logica colore
     
     local_flip = find_zero_crossing(gex_strike, spot)
     final_flip = local_flip if local_flip else data["gamma_flip"]
@@ -285,18 +286,20 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
     x_max = max(calls_agg["strike"].max(), puts_agg["strike"].max())
     
-    # --- MODIFICA VISUALE 1: SFONDO REGIME (Verdino vs Rosino) ---
+    # --- MODIFICA VISUALE 1: SFONDO REGIME ADATTIVO ---
     if final_flip:
-        # Zona Sinistra (Strike < Flip) -> Rosino (Short Gamma / Volatility)
-        ax.axvspan(x_min, final_flip, facecolor='#FFEBEE', alpha=0.4, zorder=0) 
-        # Zona Destra (Strike > Flip) -> Verdino (Long Gamma / Stability)
-        ax.axvspan(final_flip, x_max, facecolor='#E8F5E9', alpha=0.4, zorder=0)
+        if total_gex > 0:
+            # REGIME LONG GAMMA: Coloro SOLO la parte destra (Verdino), la sinistra resta bianca
+            ax.axvspan(final_flip, x_max, facecolor='#E8F5E9', alpha=0.45, zorder=0)
+        else:
+            # REGIME SHORT GAMMA: Coloro SOLO la parte sinistra (Rosino), la destra resta bianca
+            ax.axvspan(x_min, final_flip, facecolor='#FFEBEE', alpha=0.45, zorder=0)
     
-    # OI Aggregato (Barre ancora più soft)
+    # OI Aggregato
     ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.35, width=bar_width, label="Put OI", zorder=2)
     ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.35, width=bar_width, label="Call OI", zorder=2)
     
-    # Walls (Colori più intensi ma professionali)
+    # Walls
     for w in call_walls:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
         ax.bar(w, val, color="#21618C", alpha=0.8, width=bar_width, zorder=3) 
@@ -309,14 +312,13 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     gex_clean = gex_strike.dropna().sort_values("strike")
     
     # --- MODIFICA VISUALE 2: LINEA GRIGIO CHIARO A PUNTINI ---
-    # Rimosso fill_between e LineCollection. Solo una linea pulita.
     ax2.plot(gex_clean["strike"], gex_clean["GEX"], color='#999999', linestyle=':', linewidth=2, label="Net GEX Structure", zorder=5)
     
     ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot", zorder=6)
     if final_flip:
         ax.axvline(final_flip, color="#7F8C8D", ls="-.", lw=1.2, label="Flip", zorder=6)
 
-    # Etichette (Box bianchi puliti)
+    # Etichette
     max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100
     y_offset = max_y * 0.03
     bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#D5D8DC", alpha=0.95)
@@ -332,7 +334,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax2.set_ylabel("Net Gamma Exposure", fontsize=10, color="#777")
     ax2.axhline(0, color="#BDC3C7", lw=0.5, ls='-') 
     
-    # Grid molto leggera
     ax.grid(True, which='major', axis='both', color='#EEEEEE', linestyle='-', linewidth=0.5, zorder=0)
 
     legend_elements = [
