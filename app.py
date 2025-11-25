@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning Pro v20.0 (Adaptive Clean Edition)
+GEX Positioning Pro v20.0 (Percentage Bias Edition)
 - VISUALS: Light Dotted GEX Line.
-- REGIME MAP: Single-side background coloring based on Global GEX Regime.
+- REGIME MAP: Adaptive background coloring.
+- DATA: Bias percentage added back to the report.
 """
 
 import streamlit as st
@@ -183,9 +184,13 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
     regime_status = "LONG GAMMA" if tot_gex > 0 else "SHORT GAMMA"
     regime_color = "#2E8B57" if tot_gex > 0 else "#C0392B"
     
-    if net_bias > 30: bias_desc = f"Dominanza Call (Strutturale)"
-    elif net_bias < -30: bias_desc = f"Dominanza Put (Strutturale)"
-    else: bias_desc = f"Equilibrio / Neutrale"
+    # --- MODIFICA: Aggiunta la percentuale nel testo del Bias ---
+    if net_bias > 30: 
+        bias_desc = f"Dominanza Call (+{net_bias:.1f}%)"
+    elif net_bias < -30: 
+        bias_desc = f"Dominanza Put ({net_bias:.1f}%)"
+    else: 
+        bias_desc = f"Equilibrio ({net_bias:.1f}%)"
 
     safe_zone = False
     if effective_flip is not None:
@@ -244,7 +249,7 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
 def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     calls, puts = data["calls"], data["puts"]
     gex_strike = data["gex_by_strike"]
-    total_gex = data['total_gex'] # Recupero il Total GEX per la logica colore
+    total_gex = data['total_gex'] 
     
     local_flip = find_zero_crossing(gex_strike, spot)
     final_flip = local_flip if local_flip else data["gamma_flip"]
@@ -282,17 +287,16 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax = fig.add_subplot(gs[0])
     bar_width = spot * 0.007
     
-    # Limiti per lo sfondo
     x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
     x_max = max(calls_agg["strike"].max(), puts_agg["strike"].max())
     
-    # --- MODIFICA VISUALE 1: SFONDO REGIME ADATTIVO ---
+    # SFONDO ADATTIVO (Clean Logic: One Side Only)
     if final_flip:
         if total_gex > 0:
-            # REGIME LONG GAMMA: Coloro SOLO la parte destra (Verdino), la sinistra resta bianca
+            # REGIME LONG GAMMA: Sfondo Verdino a DESTRA
             ax.axvspan(final_flip, x_max, facecolor='#E8F5E9', alpha=0.45, zorder=0)
         else:
-            # REGIME SHORT GAMMA: Coloro SOLO la parte sinistra (Rosino), la destra resta bianca
+            # REGIME SHORT GAMMA: Sfondo Rosino a SINISTRA
             ax.axvspan(x_min, final_flip, facecolor='#FFEBEE', alpha=0.45, zorder=0)
     
     # OI Aggregato
@@ -307,11 +311,10 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
         val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
         ax.bar(w, val, color="#D35400", alpha=0.8, width=bar_width, zorder=3) 
 
-    # 2. VISUAL: Profilo GEX Netto
+    # Profilo GEX (Linea Dotted)
     ax2 = ax.twinx()
     gex_clean = gex_strike.dropna().sort_values("strike")
     
-    # --- MODIFICA VISUALE 2: LINEA GRIGIO CHIARO A PUNTINI ---
     ax2.plot(gex_clean["strike"], gex_clean["GEX"], color='#999999', linestyle=':', linewidth=2, label="Net GEX Structure", zorder=5)
     
     ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot", zorder=6)
@@ -356,6 +359,8 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax_rep.text(0.22, 0.88, f"REGIME: ", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(0.33, 0.88, rep['regime'], fontsize=11, fontweight='bold', color=rep['regime_color'], fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(0.53, 0.88, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
+    
+    # BIAS CON PERCENTUALE
     ax_rep.text(0.55, 0.88, f"BIAS: {rep['bias']}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
     flip_text = f"FLIP STRUTTURALE: {rep['flip_desc']}"
