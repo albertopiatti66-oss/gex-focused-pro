@@ -15,6 +15,7 @@ import matplotlib.patches as patches
 from matplotlib import gridspec
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib.collections import LineCollection # <--- NUOVA IMPORTAZIONE NECESSARIA
 from scipy.stats import norm
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -69,7 +70,6 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         all_puts = []
         
         # Barra progresso (visibile solo se chiamato da UI, qui logica interna)
-        # Gestiamo il loop
         progress_text = "Scaricamento scadenze in corso..."
         my_bar = st.progress(0, text=progress_text)
         
@@ -146,8 +146,6 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
     max_oi = max(calls["openInterest"].max(), puts["openInterest"].max()) if not calls.empty else 0
     threshold = max_oi * min_oi_ratio
     
-    # Non eliminiamo i dati, ma calcoliamo GEX su tutto. I muri li selezioneremo dopo.
-    
     # Calcolo Gamma Row-by-Row
     calls["gamma_val"] = vectorized_bs_gamma(spot, calls["strike"].values, calls["T"].values, risk_free, calls["impliedVolatility"].values)
     puts["gamma_val"] = vectorized_bs_gamma(spot, puts["strike"].values, puts["T"].values, risk_free, puts["impliedVolatility"].values)
@@ -171,7 +169,6 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
     # Calcolo Flip (Weighted Average)
     gamma_flip = None
     if call_sign == 1 and put_sign == -1 and abs(total_gex) > 1000:
-        # Usiamo solo strike con GEX rilevante per il flip per evitare outlier lontani
         relevant_gex = gex_by_strike[gex_by_strike["GEX"].abs() > (gex_by_strike["GEX"].abs().max() * 0.05)]
         if not relevant_gex.empty:
             numerator = (relevant_gex["strike"] * relevant_gex["GEX"]).sum()
@@ -182,9 +179,9 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
                     gamma_flip = raw_flip
 
     return {
-        "calls": calls, # DataFrame completo con tutte le scadenze
+        "calls": calls, 
         "puts": puts,
-        "gex_by_strike": gex_by_strike, # DataFrame aggregato per strike
+        "gex_by_strike": gex_by_strike, 
         "gamma_flip": gamma_flip,
         "net_gamma_bias": net_gamma_bias,
         "total_gex": total_gex
@@ -197,7 +194,6 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
 def find_zero_crossing(df, spot):
     try:
         df = df.sort_values("strike")
-        # Smooth leggero per evitare falsi incroci su strike illiquidi
         df["GEX_MA"] = df["GEX"].rolling(3, center=True, min_periods=1).mean()
         sign_change = ((df["GEX_MA"] > 0) != (df["GEX_MA"].shift(1) > 0)) & (~df["GEX_MA"].shift(1).isna())
         crossings = df[sign_change]
@@ -234,11 +230,10 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
     else:
         flip_desc = "Flip indefinito (Mercato confuso)"
 
-    # Logica Narrativa (Adattata al Positioning)
+    # Logica Narrativa
     scommessa = ""
     colore_bg = "#ffffff"
     bordino = "grey"
-    icona = ""
 
     if safe_zone and tot_gex > 0:
         scommessa = "📈 POSITIONING: RIALZISTA / BUY THE DIP"
@@ -285,15 +280,13 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
 # -----------------------------------------------------------------------------
 
 def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
-    # Nota: Qui usiamo i dati AGGREGATI
-    calls, puts = data["calls"], data["puts"] # Questi sono i raw data di tutte le scadenze
+    calls, puts = data["calls"], data["puts"]
     gex_strike = data["gex_by_strike"]
     
     local_flip = find_zero_crossing(gex_strike, spot)
     final_flip = local_flip if local_flip else data["gamma_flip"]
 
-    # --- WALLS LOGIC (Su dati aggregati) ---
-    # Raggruppiamo Calls e Puts per strike (sommando OI e GEX) per trovare i muri VERI
+    # --- WALLS LOGIC ---
     calls_agg = calls.groupby("strike")[["openInterest", "GEX"]].sum().reset_index()
     puts_agg = puts.groupby("strike")[["openInterest", "GEX"]].sum().reset_index()
     
@@ -327,11 +320,10 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax = fig.add_subplot(gs[0])
     bar_width = spot * 0.007
     
-    # Disegniamo OI Aggregato
+    # OI Aggregato
     ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#ffcc80", alpha=0.3, width=bar_width, label="Put OI (Total)")
     ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#90caf9", alpha=0.3, width=bar_width, label="Call OI (Total)")
     
-    # Walls Evidenziati
     for w in call_walls:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
         ax.bar(w, val, color="#0d47a1", alpha=0.9, width=bar_width)
@@ -339,13 +331,26 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
         val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
         ax.bar(w, val, color="#e65100", alpha=0.9, width=bar_width)
 
-    # Profilo GEX Netto Aggregato
+    # Profilo GEX Netto Aggregato (Aree)
     ax2 = ax.twinx()
     ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]>=0), color="green", alpha=0.10, interpolate=True)
     ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]<0), color="red", alpha=0.10, interpolate=True)
     
-    # --- MODIFICA 1: Linea GEX molto più chiara (Nera e spessa) ---
-    ax2.plot(gex_strike["strike"], gex_strike["GEX"], color="black", lw=2.5, ls="-", label="Aggregated Net GEX")
+    # --- MODIFICA VISUALE: LINEA BICOLORE (Verde Scuro / Rosso Scuro) ---
+    x_vals = gex_strike["strike"].values
+    y_vals = gex_strike["GEX"].values
+    
+    # Creazione segmenti per LineCollection
+    points = np.array([x_vals, y_vals]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    
+    # Logica Colore: Se il valore medio del segmento è positivo -> Verde Scuro, altrimenti Rosso Scuro
+    colors = ["#006400" if (y_vals[i] + y_vals[i+1])/2 >= 0 else "#8B0000" for i in range(len(y_vals)-1)]
+    
+    lc = LineCollection(segments, colors=colors, linewidth=2.5)
+    ax2.add_collection(lc)
+    ax2.autoscale_view() # Importante per aggiornare i limiti dell'asse twinx
+    # ---------------------------------------------------------------------
     
     ax.axvline(spot, color="blue", ls="--", lw=1.2, label="Spot")
     if final_flip:
@@ -372,7 +377,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
         Patch(facecolor='#90caf9', edgecolor='none', label='Total Call OI'),
         Patch(facecolor='#ffcc80', edgecolor='none', label='Total Put OI'),
         Line2D([0], [0], color='blue', lw=1.5, ls='--', label=f'Spot {spot:.0f}'),
-        Line2D([0], [0], color='black', lw=2.5, label='Net GEX Structure'),
+        Line2D([0], [0], color='#444444', lw=2.5, label='Net GEX Structure'), # Colore legenda neutro
     ]
     if final_flip: legend_elements.append(Line2D([0], [0], color='red', lw=1.5, ls='-.', label=f'Flip {final_flip:.0f}'))
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=10)
@@ -402,14 +407,11 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     accent_rect = patches.Rectangle((box_x, box_y), 0.015, box_h, facecolor=rep['bordino'], edgecolor="none", transform=ax_rep.transAxes, zorder=2)
     ax_rep.add_patch(accent_rect)
     
-    # --- MODIFICA 2: Sistemazione spaziatura testo Report per evitare sovrapposizioni ---
     sintesi_title = rep['scommessa']
-    sintesi_desc = textwrap.fill(rep['dettaglio'], width=110) # Width leggermente aumentato
+    sintesi_desc = textwrap.fill(rep['dettaglio'], width=110)
     
-    # Titolo spostato più in alto
+    # Coordinate corrette per evitare sovrapposizioni
     ax_rep.text(box_x + 0.04, box_y + 0.35, sintesi_title, fontsize=14, fontweight='bold', color="#222", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    
-    # Descrizione ancorata in alto (va='top') subito sotto il titolo
     ax_rep.text(box_x + 0.04, box_y + 0.28, sintesi_desc, fontsize=11, color="#333", fontfamily='sans-serif', va='top', transform=ax_rep.transAxes)
 
     plt.tight_layout()
@@ -433,7 +435,6 @@ with col1:
         st.success(f"Spot: ${spot:.2f}")
     
     st.markdown("---")
-    # Qui sta la modifica chiave: Scelta di quante scadenze aggregare
     n_exps = st.slider("Scadenze da Aggregare", 4, 12, 8, help="8 scadenze coprono solitamente ~30-40 giorni (ideale per swing).")
     
     st.markdown("---")
@@ -450,7 +451,6 @@ with col1:
 
 with col2:
     if btn_calc and spot:
-        # Nota: Non serve più sel_exp, perché le scarichiamo tutte in automatico
         calls, puts, err = get_aggregated_data(symbol, spot, n_exps, range_pct)
         
         if err:
