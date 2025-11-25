@@ -4,6 +4,7 @@ GEX Focused Pro v19.0 (GEX-Based Walls)
 - WALLS LOGIC UPGRADE: Walls are now selected based on Net GEX (OI * Gamma)
   instead of just Open Interest. This highlights active hedging pressure.
 - Synced Flip & High-End Report preserved.
+- BUG FIX: Gestione corretta errori di formattazione su Flip mancante.
 """
 
 import streamlit as st
@@ -93,7 +94,7 @@ def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=
     if calls_clean.empty: calls_clean = calls.copy()
     if puts_clean.empty: puts_clean = puts.copy()
 
-    # Calcolo Gamma per tutti gli strike nel range (serve per l'identificazione muri corretta)
+    # Calcolo Gamma per tutti gli strike nel range
     full_c_gamma = vectorized_bs_gamma(spot, calls["strike"].values, T, risk_free, calls["impliedVolatility"].values)
     full_p_gamma = vectorized_bs_gamma(spot, puts["strike"].values, T, risk_free, puts["impliedVolatility"].values)
     
@@ -129,7 +130,7 @@ def calculate_gex_profile(calls, puts, spot, expiry_date, call_sign=1, put_sign=
     }, None
 
 # -----------------------------------------------------------------------------
-# 2. REPORT ANALITICO
+# 2. REPORT ANALITICO (CORRETTO)
 # -----------------------------------------------------------------------------
 
 def find_zero_crossing(df, spot):
@@ -165,7 +166,7 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
     else: bias_desc = f"Neutrale ({net_bias:.1f}%)"
 
     safe_zone = False
-    if effective_flip:
+    if effective_flip is not None:
         if spot > effective_flip:
             safe_zone = True
             flip_desc = f"Prezzo SOPRA il Flip ({effective_flip:.0f}) - Safe Zone"
@@ -173,6 +174,7 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
             safe_zone = False
             flip_desc = f"Prezzo SOTTO il Flip ({effective_flip:.0f}) - Danger Zone"
     else:
+        # Se non c'è un flip chiaro
         flip_desc = "Nessun Flip chiaro rilevato"
 
     scommessa = ""
@@ -209,7 +211,9 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
             bordino = "#c62828"
         else:
             scommessa = "⚠️ Il mercato è INTRAPPOLATO (Bull Trap)"
-            dettaglio = f"Tante Call aperte ma prezzo sotto il Flip ({effective_flip:.0f}). Se non recupera, liquidano le Call."
+            # FIX: Gestione sicura della stampa del Flip se è None
+            flip_str = f"{effective_flip:.0f}" if effective_flip is not None else "N/D"
+            dettaglio = f"Tante Call aperte ma prezzo sotto il Flip ({flip_str}). Se non recupera, liquidano le Call."
             colore_bg = "#ffccbc"
             bordino = "#bf360c"
     else:
@@ -247,7 +251,7 @@ def plot_dashboard_unified(symbol, data, spot, expiry, dist_min_pct):
     local_flip = find_zero_crossing(gex_strike, spot)
     final_flip = local_flip if local_flip else data["gamma_flip"]
 
-    # --- NUOVA LOGICA: WALLS BASATI SU GEX ---
+    # --- WALLS BASATI SU GEX ---
     calls = calls.copy(); puts = puts.copy()
     
     # WallScore = Assoluto del GEX (OI * Gamma). Più è alto, più è un muro sensibile.
@@ -286,7 +290,6 @@ def plot_dashboard_unified(symbol, data, spot, expiry, dist_min_pct):
     ax.bar(calls["strike"], calls["openInterest"], color="#90caf9", alpha=0.2, width=bar_width)
     
     # Walls: GEX BASED (Barre Piene)
-    # Attenzione: Usiamo l'altezza dell'OI per disegnarle, ma sono selezionate in base al GEX
     for w in call_walls:
         val = calls[calls['strike']==w]['openInterest'].sum()
         ax.bar(w, val, color="#0d47a1", alpha=0.9, width=bar_width)
