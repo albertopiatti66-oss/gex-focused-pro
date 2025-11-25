@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning Pro v20.0 (Logic Fix Edition)
-- FIX: Coerenza matematica tra Regime Gamma e Bias.
-- FIX: Calcolo percentuale Netta (-100% a +100%).
+GEX Positioning Pro v20.1 (Swing Ready Edition)
+- FIX: Selezione scadenze intelligente (0-45gg).
+- FIX: Filtro dati "spazzatura" (prezzi < 0.01 o zero bid).
+- FIX: Volatilità Implicita dinamica (media strike attivi).
+- FIX: Tasso Risk-Free dinamico da T-Bill (^IRX).
 """
 
 import streamlit as st
@@ -21,7 +23,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning Pro v20.0", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning Pro v20.1", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI (AGGREGATI)
@@ -57,11 +59,29 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         exps = tk.options
         if not exps: return None, None, "Nessuna scadenza trovata (Yahoo API)."
         
-        target_exps = exps[:n_expirations]
+        # --- FIX 1: FILTRO SCADENZE INTELLIGENTE (SWING TRADING 0-45 GG) ---
+        today = datetime.now().date()
+        valid_exps = []
+        for e in exps:
+            try:
+                edate = datetime.strptime(e, "%Y-%m-%d").date()
+                days_to = (edate - today).days
+                # Prendiamo scadenze da oggi fino a 45 giorni (Swing Window)
+                if 0 <= days_to <= 45:
+                    valid_exps.append(e)
+            except:
+                continue
+        
+        if not valid_exps:
+            return None, None, "Nessuna scadenza trovata nei prossimi 45 giorni."
+
+        target_exps = valid_exps[:n_expirations]
+        # -------------------------------------------------------------------
+        
         all_calls = []
         all_puts = []
         
-        progress_text = "Scaricamento scadenze in corso..."
+        progress_text = "Analisi scadenze Swing (0-45gg)..."
         my_bar = st.progress(0, text=progress_text)
         
         for i, exp in enumerate(target_exps):
@@ -73,6 +93,13 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
                 c = chain.calls.copy()
                 p = chain.puts.copy()
                 
+                # --- FIX 2: FILTRO DATI SPAZZATURA (Cleanup) ---
+                # Rimuove opzioni morte (prezzo < 1 cent o bid a zero)
+                # Questo evita che strike fantasma creino muri falsi
+                c = c[(c['lastPrice'] >= 0.01) | (c['bid'] > 0)]
+                p = p[(p['lastPrice'] >= 0.01) | (p['bid'] > 0)]
+                # -----------------------------------------------
+
                 c["expiry"] = exp
                 p["expiry"] = exp
                 
@@ -83,7 +110,7 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
                 continue
         
         my_bar.empty()
-        if not all_calls: return None, None, "Errore recupero chain (Dati vuoti)."
+        if not all_calls: return None, None, "Errore recupero chain (Dati vuoti dopo filtro)."
 
         calls = pd.concat(all_calls, ignore_index=True)
         puts = pd.concat(all_puts, ignore_index=True)
@@ -96,7 +123,13 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
         df["openInterest"] = pd.to_numeric(df["openInterest"], errors="coerce")
         df["impliedVolatility"] = pd.to_numeric(df["impliedVolatility"], errors="coerce")
-        df["impliedVolatility"] = df["impliedVolatility"].replace(0, 0.3)
+        
+        # --- FIX 3: VOLATILITÀ MEDIA DINAMICA ---
+        # Invece di usare 0.3 fisso, calcoliamo la media delle IV valide
+        mean_iv = df[df["impliedVolatility"] > 0.001]["impliedVolatility"].mean()
+        fill_val = mean_iv if not pd.isna(mean_iv) else 0.3
+        df["impliedVolatility"] = df["impliedVolatility"].replace(0, fill_val)
+        # ----------------------------------------
 
     lower_bound = spot_price * (1 - range_pct/100)
     upper_bound = spot_price * (1 + range_pct/100)
@@ -106,7 +139,15 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
     return calls, puts, None
 
 def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi_ratio=0.05):
-    risk_free = 0.05
+    # --- FIX 4: RISK FREE RATE DINAMICO ---
+    # Scarica il rendimento dei T-Bill 13 settimane (^IRX)
+    try:
+        irx = yf.Ticker("^IRX").history(period="1d")["Close"].iloc[-1]
+        risk_free = irx / 100 # Es. 4.5 -> 0.045
+    except:
+        risk_free = 0.045 # Fallback prudente
+    # --------------------------------------
+
     now_dt = datetime.now(timezone.utc)
 
     def get_time_to_expiry(exp_str):
@@ -134,10 +175,7 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
     total_put_gex = puts["GEX"].sum()
     total_gex = total_call_gex + total_put_gex
     
-    # --- FIX LOGICA BIAS ---
-    # Calcoliamo la percentuale NETTA.
-    # Se Total GEX è negativo, il bias sarà negativo (es. -33% Put Dom).
-    # Se Total GEX è positivo, il bias sarà positivo (es. +20% Call Dom).
+    # Calcolo percentuale NETTA.
     abs_total = abs(total_call_gex) + abs(total_put_gex)
     net_gamma_bias = (total_gex / abs_total * 100) if abs_total > 0 else 0
 
@@ -158,7 +196,8 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
         "gex_by_strike": gex_by_strike, 
         "gamma_flip": gamma_flip,
         "net_gamma_bias": net_gamma_bias,
-        "total_gex": total_gex
+        "total_gex": total_gex,
+        "risk_free_used": risk_free # Per debug se serve
     }, None
 
 # -----------------------------------------------------------------------------
@@ -187,8 +226,6 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
     regime_status = "LONG GAMMA" if tot_gex > 0 else "SHORT GAMMA"
     regime_color = "#2E8B57" if tot_gex > 0 else "#C0392B"
     
-    # --- FIX DESCRIZIONE BIAS ---
-    # Ora net_bias va da -100 a +100.
     if net_bias > 5: 
         bias_desc = f"Dominanza Call (+{net_bias:.1f}%)"
     elif net_bias < -5: 
@@ -352,7 +389,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     if final_flip: legend_elements.append(Line2D([0], [0], color='#7F8C8D', lw=1.2, ls='-.', label=f'Flip {final_flip:.0f}'))
     
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=9, edgecolor="#EEEEEE")
-    ax.set_title(f"{symbol} STRUCTURAL GEX PROFILE (Next {n_exps} Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#444")
+    ax.set_title(f"{symbol} STRUCTURAL GEX PROFILE (Next {n_exps} Active Swing Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#444")
 
     # --- SUBPLOT 2: REPORT MINIMALISTA ---
     ax_rep = fig.add_subplot(gs[1])
@@ -394,8 +431,8 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning Pro v20.0")
-st.markdown("Analisi strutturale Multi-Scadenza per Swing Trading (Lun-Ven).")
+st.title("⚡ GEX Positioning Pro v20.1 (Swing)")
+st.markdown("Analisi Strutturale Swing (0-45gg) - Dati Yahoo Filtrati.")
 
 col1, col2 = st.columns([1, 2])
 
@@ -408,7 +445,7 @@ with col1:
         st.success(f"Spot: ${spot:.2f}")
     
     st.markdown("---")
-    n_exps = st.slider("Scadenze da Aggregare", 4, 12, 8, help="8 scadenze coprono solitamente ~30-40 giorni (ideale per swing).")
+    n_exps = st.slider("Scadenze da Aggregare", 4, 12, 8, help="Seleziona fino a X scadenze, ma il sistema filtrerà solo quelle entro 45 giorni.")
     
     st.markdown("---")
     dealer_long_call = st.checkbox("Dealer Long CALL (+)", value=True)
@@ -429,7 +466,7 @@ with col2:
         if err:
             st.error(err)
         else:
-            with st.spinner("Calcolo GEX Strutturale..."):
+            with st.spinner("Calcolo GEX Strutturale (Safe Mode)..."):
                 data_res, err_calc = calculate_aggregated_gex(
                     calls, puts, spot, 
                     call_sign=call_sign, put_sign=put_sign
@@ -439,6 +476,10 @@ with col2:
                     st.error(err_calc)
                 else:
                     try:
+                        # Mostriamo il tasso risk-free usato per trasparenza
+                        rf_used = data_res.get('risk_free_used', 0.05)
+                        st.caption(f"ℹ️ Parametri calcolati: Risk-Free Rate {rf_used*100:.2f}% (da T-Bill ^IRX)")
+
                         fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_min)
                         st.pyplot(fig)
                         
