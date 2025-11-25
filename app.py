@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Focused Pro v20.0 (Positioning Edition)
+GEX Focused Pro v20.0 (Positioning Edition - Stable Fix)
 - CORE UPGRADE: Multi-Expiry Aggregation for Swing/Positioning Trading.
 - WALLS LOGIC: Net GEX (OI * Gamma) on aggregated open interest.
-- VISUALS: Streamlit High-End Report preserved.
+- VISUALS: Elegant Bicolor Line with Crash Protection.
 """
 
 import streamlit as st
@@ -57,7 +57,7 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
     try:
         tk = yf.Ticker(symbol)
         exps = tk.options
-        if not exps: return None, None, "Nessuna scadenza trovata."
+        if not exps: return None, None, "Nessuna scadenza trovata (Yahoo API)."
         
         target_exps = exps[:n_expirations]
         all_calls = []
@@ -80,12 +80,12 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
                 
                 all_calls.append(c)
                 all_puts.append(p)
-                time.sleep(0.15) 
+                time.sleep(0.1) 
             except Exception:
                 continue
         
         my_bar.empty()
-        if not all_calls: return None, None, "Errore recupero chain."
+        if not all_calls: return None, None, "Errore recupero chain (Dati vuoti)."
 
         calls = pd.concat(all_calls, ignore_index=True)
         puts = pd.concat(all_puts, ignore_index=True)
@@ -182,9 +182,8 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
     net_bias = data['net_gamma_bias']
     effective_flip = synced_flip
     
-    # Colori per il testo/status
     regime_status = "LONG GAMMA" if tot_gex > 0 else "SHORT GAMMA"
-    regime_color = "#2E8B57" if tot_gex > 0 else "#C0392B" # Colori più eleganti
+    regime_color = "#2E8B57" if tot_gex > 0 else "#C0392B"
     
     if net_bias > 30: bias_desc = f"Dominanza Call (Strutturale)"
     elif net_bias < -30: bias_desc = f"Dominanza Put (Strutturale)"
@@ -202,7 +201,6 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
         flip_desc = "Flip indefinito (Mercato confuso)"
 
     scommessa = ""
-    # Nota: impostiamo bordino per l'accento, il colore_bg sarà bianco fisso nel plot
     bordino = "grey"
 
     if safe_zone and tot_gex > 0:
@@ -286,46 +284,52 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     bar_width = spot * 0.007
     
     # 1. VISUAL: OI Aggregato (Colori Professionali)
-    # Burlywood (Sabbia/Oro spento) per Puts, SteelBlue (Blu aviazione) per Calls
     ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.4, width=bar_width, label="Put OI (Total)")
     ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.4, width=bar_width, label="Call OI (Total)")
     
-    # Walls (Toni più saturi degli stessi colori)
+    # Walls
     for w in call_walls:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#21618C", alpha=0.9, width=bar_width) # Dark Steel Blue
+        ax.bar(w, val, color="#21618C", alpha=0.9, width=bar_width) 
     for w in put_walls:
         val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#D35400", alpha=0.9, width=bar_width) # Pumpkin/Rust
+        ax.bar(w, val, color="#D35400", alpha=0.9, width=bar_width) 
 
-    # 2. VISUAL: Profilo GEX Netto (Linee più fini ed eleganti)
+    # 2. VISUAL: Profilo GEX Netto
     ax2 = ax.twinx()
-    # Aree molto trasparenti (Alpha 0.05) per non disturbare
-    ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]>=0), color="#2ECC71", alpha=0.05, interpolate=True)
-    ax2.fill_between(gex_strike["strike"], gex_strike["GEX"], 0, where=(gex_strike["GEX"]<0), color="#E74C3C", alpha=0.05, interpolate=True)
     
-    # Linea Bicolore Elegante (Verde Bosco / Rosso Mattone) - Spessore 1.8
-    x_vals = gex_strike["strike"].values
-    y_vals = gex_strike["GEX"].values
+    # Pulizia preventiva per evitare crash grafici
+    gex_clean = gex_strike.dropna().sort_values("strike")
     
-    points = np.array([x_vals, y_vals]).T.reshape(-1, 1, 2)
-    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    ax2.fill_between(gex_clean["strike"], gex_clean["GEX"], 0, where=(gex_clean["GEX"]>=0), color="#2ECC71", alpha=0.05, interpolate=True)
+    ax2.fill_between(gex_clean["strike"], gex_clean["GEX"], 0, where=(gex_clean["GEX"]<0), color="#E74C3C", alpha=0.05, interpolate=True)
     
-    # Colori professionali per la linea
-    color_pos = "#2E8B57" # SeaGreen
-    color_neg = "#C0392B" # Dark Red
-    colors = [color_pos if (y_vals[i] + y_vals[i+1])/2 >= 0 else color_neg for i in range(len(y_vals)-1)]
+    x_vals = gex_clean["strike"].values
+    y_vals = gex_clean["GEX"].values
     
-    lc = LineCollection(segments, colors=colors, linewidth=1.8)
-    ax2.add_collection(lc)
-    ax2.autoscale_view()
-    
+    # --- CRASH PROTECTION PER LINECOLLECTION ---
+    # Se abbiamo abbastanza dati, usa la linea bicolore elegante. Altrimenti fallback.
+    if len(x_vals) > 1:
+        points = np.array([x_vals, y_vals]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        
+        color_pos = "#2E8B57" # SeaGreen
+        color_neg = "#C0392B" # Dark Red
+        colors = [color_pos if (y_vals[i] + y_vals[i+1])/2 >= 0 else color_neg for i in range(len(y_vals)-1)]
+        
+        lc = LineCollection(segments, colors=colors, linewidth=1.8)
+        ax2.add_collection(lc)
+        ax2.autoscale_view()
+    else:
+        # Fallback sicuro
+        ax2.plot(x_vals, y_vals, color="#555555", lw=1.5, label="Net GEX")
+
     ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot")
     if final_flip:
         ax.axvline(final_flip, color="#7F8C8D", ls="-.", lw=1.2, label="Flip")
 
-    # Etichette (Box bianchi puliti)
-    max_y = calls_agg["openInterest"].max()
+    # Etichette
+    max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100
     y_offset = max_y * 0.03
     bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#D5D8DC", alpha=0.95)
 
@@ -338,9 +342,8 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
 
     ax.set_ylabel("Aggregated Open Interest", fontsize=10, fontweight='bold', color="#555")
     ax2.set_ylabel("Net Gamma Exposure", fontsize=10, color="#555")
-    ax2.axhline(0, color="#BDC3C7", lw=0.5) # Asse zero grigio chiaro
+    ax2.axhline(0, color="#BDC3C7", lw=0.5) 
     
-    # Watermark discreto
     ax.text(0.99, 0.02, "GEX Positioning Pro v20.0", transform=ax.transAxes, ha="right", va="bottom", fontsize=12, color="#CCCCCC", fontweight="bold")
 
     legend_elements = [
@@ -357,7 +360,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax_rep = fig.add_subplot(gs[1])
     ax_rep.axis("off")
     
-    # Header Dati
     ax_rep.text(0.02, 0.88, f"SPOT: {rep['spot']:.2f}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(0.20, 0.88, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
     ax_rep.text(0.22, 0.88, f"REGIME: ", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
@@ -371,13 +373,11 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax_rep.text(0.02, 0.72, flip_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(0.02, 0.60, levels_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
     
-    # Box Riassuntivo: BIANCO con Bordo Sottile (Stile Card)
     box_x, box_y = 0.02, 0.05
     box_w, box_h = 0.96, 0.45
     rect = patches.FancyBboxPatch((box_x, box_y), box_w, box_h, boxstyle="round,pad=0.03", linewidth=0.8, edgecolor="#DDDDDD", facecolor="#FFFFFF", transform=ax_rep.transAxes, zorder=1)
     ax_rep.add_patch(rect)
     
-    # Barra di accento laterale (indica il sentiment con il colore)
     accent_rect = patches.Rectangle((box_x, box_y), 0.010, box_h, facecolor=rep['bordino'], edgecolor="none", transform=ax_rep.transAxes, zorder=2)
     ax_rep.add_patch(accent_rect)
     
@@ -438,10 +438,15 @@ with col2:
                 if err_calc:
                     st.error(err_calc)
                 else:
-                    fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_min)
-                    st.pyplot(fig)
-                    
-                    st.markdown("---")
-                    buf = BytesIO()
-                    fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
-                    st.download_button("💾 Scarica Report Positioning", buf.getvalue(), f"GEX_STRUCT_{symbol}.png", "image/png", use_container_width=True)
+                    # GESTIONE ERRORI GRAFICI
+                    try:
+                        fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_min)
+                        st.pyplot(fig)
+                        
+                        st.markdown("---")
+                        buf = BytesIO()
+                        fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
+                        st.download_button("💾 Scarica Report Positioning", buf.getvalue(), f"GEX_STRUCT_{symbol}.png", "image/png", use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Errore durante la creazione del grafico: {e}")
+                        st.info("Prova a cambiare ticker o ridurre il range %.")
