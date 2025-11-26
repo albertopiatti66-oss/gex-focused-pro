@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.1 (Swing Ready Edition)
+GEX Positioning v20.2 (Swing Ready Edition)
 - FIX: Selezione scadenze intelligente (0-45gg).
 - FIX: Filtro dati "spazzatura" (prezzi < 0.01 o zero bid).
 - FIX: Volatilità Implicita dinamica (media strike attivi).
 - FIX: Tasso Risk-Free dinamico da T-Bill (^IRX).
-- UPDATE: Timestamp e Range date nel report grafico.
+- UPDATE: Timestamp e Range date posizionati DI FIANCO ai livelli chiave.
 """
 
 import streamlit as st
@@ -390,21 +390,25 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax_rep = fig.add_subplot(gs[1])
     ax_rep.axis("off")
     
+    # Riga 1: Spot / Regime
     ax_rep.text(0.02, 0.88, f"SPOT: {rep['spot']:.2f}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(0.20, 0.88, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
     ax_rep.text(0.22, 0.88, f"REGIME: ", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(0.33, 0.88, rep['regime'], fontsize=11, fontweight='bold', color=rep['regime_color'], fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(0.53, 0.88, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
     
+    # Riga 1 (Destra): Bias
     ax_rep.text(0.55, 0.88, f"BIAS: {rep['bias']}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
+    # Riga 2: Flip
     flip_text = f"FLIP STRUTTURALE: {rep['flip_desc']}"
-    levels_text = f"RESISTENZA CHIAVE: {rep['cw']}   |   SUPPORTO CHIAVE: {rep['pw']}"
-    
     ax_rep.text(0.02, 0.72, flip_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    
+    # Riga 3: Key Levels (Sinistra)
+    levels_text = f"RESISTENZA CHIAVE: {rep['cw']}   |   SUPPORTO CHIAVE: {rep['pw']}"
     ax_rep.text(0.02, 0.60, levels_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
-    # --- AGGIUNTA RICHIESTA: TIMESTAMP E RANGE ---
+    # --- AGGIUNTA RICHIESTA: TIMESTAMP E RANGE (DI FIANCO - STESSA ALTEZZA) ---
     all_exps = pd.concat([calls["expiry"], puts["expiry"]]).unique()
     sorted_exps = sorted([pd.to_datetime(d) for d in all_exps])
     
@@ -416,9 +420,11 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
     timestamp_text = f"Report prodotto il {now_str}  |  Range Scadenze: {range_str}"
     
-    ax_rep.text(0.02, 0.52, timestamp_text, fontsize=9, color="#888", fontstyle='italic', fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # Coordinate: x=0.55 (metà destra), y=0.60 (stessa riga di levels_text)
+    ax_rep.text(0.55, 0.60, timestamp_text, fontsize=9, color="#888", fontstyle='italic', fontfamily='sans-serif', transform=ax_rep.transAxes)
     # ---------------------------------------------
     
+    # Box Commento
     box_x, box_y = 0.02, 0.05
     box_w, box_h = 0.96, 0.45
     rect = patches.FancyBboxPatch((box_x, box_y), box_w, box_h, boxstyle="round,pad=0.03", linewidth=0.8, edgecolor="#DDDDDD", facecolor="#FFFFFF", transform=ax_rep.transAxes, zorder=1)
