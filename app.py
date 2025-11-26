@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning  v20 (Swing Ready Edition)
+GEX Positioning v20.1 (Swing Ready Edition)
 - FIX: Selezione scadenze intelligente (0-45gg).
 - FIX: Filtro dati "spazzatura" (prezzi < 0.01 o zero bid).
 - FIX: Volatilità Implicita dinamica (media strike attivi).
 - FIX: Tasso Risk-Free dinamico da T-Bill (^IRX).
+- UPDATE: Timestamp e Range date nel report grafico.
 """
 
 import streamlit as st
@@ -23,7 +24,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning  V.20", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI (AGGREGATI)
@@ -95,7 +96,6 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
                 
                 # --- FIX 2: FILTRO DATI SPAZZATURA (Cleanup) ---
                 # Rimuove opzioni morte (prezzo < 1 cent o bid a zero)
-                # Questo evita che strike fantasma creino muri falsi
                 c = c[(c['lastPrice'] >= 0.01) | (c['bid'] > 0)]
                 p = p[(p['lastPrice'] >= 0.01) | (p['bid'] > 0)]
                 # -----------------------------------------------
@@ -125,7 +125,6 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         df["impliedVolatility"] = pd.to_numeric(df["impliedVolatility"], errors="coerce")
         
         # --- FIX 3: VOLATILITÀ MEDIA DINAMICA ---
-        # Invece di usare 0.3 fisso, calcoliamo la media delle IV valide
         mean_iv = df[df["impliedVolatility"] > 0.001]["impliedVolatility"].mean()
         fill_val = mean_iv if not pd.isna(mean_iv) else 0.3
         df["impliedVolatility"] = df["impliedVolatility"].replace(0, fill_val)
@@ -140,12 +139,11 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
 
 def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi_ratio=0.05):
     # --- FIX 4: RISK FREE RATE DINAMICO ---
-    # Scarica il rendimento dei T-Bill 13 settimane (^IRX)
     try:
         irx = yf.Ticker("^IRX").history(period="1d")["Close"].iloc[-1]
-        risk_free = irx / 100 # Es. 4.5 -> 0.045
+        risk_free = irx / 100 
     except:
-        risk_free = 0.045 # Fallback prudente
+        risk_free = 0.045
     # --------------------------------------
 
     now_dt = datetime.now(timezone.utc)
@@ -175,7 +173,6 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
     total_put_gex = puts["GEX"].sum()
     total_gex = total_call_gex + total_put_gex
     
-    # Calcolo percentuale NETTA.
     abs_total = abs(total_call_gex) + abs(total_put_gex)
     net_gamma_bias = (total_gex / abs_total * 100) if abs_total > 0 else 0
 
@@ -197,7 +194,7 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi
         "gamma_flip": gamma_flip,
         "net_gamma_bias": net_gamma_bias,
         "total_gex": total_gex,
-        "risk_free_used": risk_free # Per debug se serve
+        "risk_free_used": risk_free
     }, None
 
 # -----------------------------------------------------------------------------
@@ -331,13 +328,11 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
     x_max = max(calls_agg["strike"].max(), puts_agg["strike"].max())
     
-    # SFONDO ADATTIVO (Clean Logic: One Side Only)
+    # SFONDO ADATTIVO
     if final_flip:
         if total_gex > 0:
-            # REGIME LONG GAMMA: Sfondo Verdino a DESTRA
             ax.axvspan(final_flip, x_max, facecolor='#E8F5E9', alpha=0.45, zorder=0)
         else:
-            # REGIME SHORT GAMMA: Sfondo Rosino a SINISTRA
             ax.axvspan(x_min, final_flip, facecolor='#FFEBEE', alpha=0.45, zorder=0)
     
     # OI Aggregato
@@ -401,7 +396,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     ax_rep.text(0.33, 0.88, rep['regime'], fontsize=11, fontweight='bold', color=rep['regime_color'], fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(0.53, 0.88, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
     
-    # BIAS CON PERCENTUALE
     ax_rep.text(0.55, 0.88, f"BIAS: {rep['bias']}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
     flip_text = f"FLIP STRUTTURALE: {rep['flip_desc']}"
@@ -409,6 +403,21 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     
     ax_rep.text(0.02, 0.72, flip_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(0.02, 0.60, levels_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
+
+    # --- AGGIUNTA RICHIESTA: TIMESTAMP E RANGE ---
+    all_exps = pd.concat([calls["expiry"], puts["expiry"]]).unique()
+    sorted_exps = sorted([pd.to_datetime(d) for d in all_exps])
+    
+    if sorted_exps:
+        range_str = f"{sorted_exps[0].strftime('%d/%m')} - {sorted_exps[-1].strftime('%d/%m/%Y')}"
+    else:
+        range_str = "N/D"
+
+    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    timestamp_text = f"Report prodotto il {now_str}  |  Range Scadenze: {range_str}"
+    
+    ax_rep.text(0.02, 0.52, timestamp_text, fontsize=9, color="#888", fontstyle='italic', fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # ---------------------------------------------
     
     box_x, box_y = 0.02, 0.05
     box_w, box_h = 0.96, 0.45
