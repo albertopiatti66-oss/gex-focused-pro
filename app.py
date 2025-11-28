@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.2 (Swing Ready Edition)
+GEX Positioning v20.3 (Swing Ready Edition)
 - FIX: Selezione scadenze intelligente (0-45gg).
 - FIX: Filtro dati "spazzatura" (prezzi < 0.01 o zero bid).
 - FIX: Volatilità Implicita dinamica (media strike attivi).
 - FIX: Tasso Risk-Free dinamico da T-Bill (^IRX).
 - UPDATE: Timestamp e Range date posizionati DI FIANCO ai livelli chiave.
+- UPDATE: Distanza Muri impostabile a 0 (disattiva filtro spaziale).
 """
 
 import streamlit as st
@@ -298,14 +299,23 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     calls_agg["WallScore"] = calls_agg["GEX"].abs()
     puts_agg["WallScore"] = puts_agg["GEX"].abs()
     
+    # --- LOGICA GESTIONE DISTANZA MURI (AGGIORNATA) ---
     def get_top_levels(df, min_dist):
         df_s = df.sort_values("WallScore", ascending=False)
         levels = []
         for k in df_s["strike"]:
-            if not levels or all(abs(k - x) > min_dist for x in levels):
+            # Se min_dist è ~0, prendiamo tutto (disattiva filtro spaziale)
+            if min_dist < 0.01:
                 levels.append(k)
+            else:
+                # Altrimenti controlliamo la distanza
+                if not levels or all(abs(k - x) > min_dist for x in levels):
+                    levels.append(k)
+            
+            # Limite massimo 3 livelli
             if len(levels) >= 3: break
         return levels
+    # ---------------------------------------------------
 
     min_dist_val = spot * (dist_min_pct / 100.0)
     
@@ -408,7 +418,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     levels_text = f"RESISTENZA CHIAVE: {rep['cw']}   |   SUPPORTO CHIAVE: {rep['pw']}"
     ax_rep.text(0.02, 0.60, levels_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
-    # --- AGGIUNTA RICHIESTA: TIMESTAMP E RANGE (DI FIANCO - STESSA ALTEZZA) ---
+    # --- TIMESTAMP E RANGE ---
     all_exps = pd.concat([calls["expiry"], puts["expiry"]]).unique()
     sorted_exps = sorted([pd.to_datetime(d) for d in all_exps])
     
@@ -420,7 +430,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
     timestamp_text = f"Report prodotto il {now_str}  |  Range Scadenze: {range_str}"
     
-    # Coordinate: x=0.55 (metà destra), y=0.60 (stessa riga di levels_text)
     ax_rep.text(0.55, 0.60, timestamp_text, fontsize=9, color="#888", fontstyle='italic', fontfamily='sans-serif', transform=ax_rep.transAxes)
     # ---------------------------------------------
     
@@ -446,7 +455,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning Pro v20.1 (Swing)")
+st.title("⚡ GEX Positioning Pro v20.3 (Swing)")
 st.markdown("Analisi Strutturale Swing (0-45gg) - Dati Yahoo Filtrati.")
 
 col1, col2 = st.columns([1, 2])
@@ -470,7 +479,10 @@ with col1:
     put_sign = 1 if dealer_long_put else -1
 
     range_pct = st.slider("Range % Prezzo", 10, 40, 20, help="Filtra strike troppo lontani per pulire il grafico.")
-    dist_min = st.slider("Dist. Muri", 1, 10, 2)
+    
+    # --- MODIFICA: Slider parte da 0 per disattivare il filtro ---
+    dist_min = st.slider("Dist. Muri Minima (%)", 0, 10, 2, help="0 = Nessun filtro (mostra anche livelli adiacenti).")
+    # ------------------------------------------------------------
 
     btn_calc = st.button("🚀 Analizza Struttura", type="primary", use_container_width=True)
 
