@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.4 (Swing Ready Edition)
+GEX Positioning v20.5 (Swing Ready Edition)
 - FIX: Selezione scadenze intelligente (0-45gg).
 - FIX: Filtro dati "spazzatura" (prezzi < 0.01 o zero bid).
 - FIX: Volatilità Implicita dinamica (media strike attivi).
 - FIX: Tasso Risk-Free dinamico da T-Bill (^IRX).
 - UPDATE: Timestamp e Range date posizionati DI FIANCO ai livelli chiave.
 - UPDATE: Distanza Muri INDIPENDENTE per Call e Put.
+- LOGIC CHANGE: Livelli chiave basati su POTENZA (Max GEX) e non vicinanza.
+- VISUAL: Livelli chiave colorati (Blu/Rosso) nel report.
 """
 
 import streamlit as st
@@ -216,7 +218,7 @@ def find_zero_crossing(df, spot):
     except:
         return None
 
-def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
+def get_analysis_content(spot, data, cw_val, pw_val, synced_flip):
     tot_gex = data['total_gex']
     net_bias = data['net_gamma_bias']
     effective_flip = synced_flip
@@ -263,10 +265,9 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
         dettaglio = f"Prezzo intrappolato sotto il Flip ({flip_str}) ma con Gamma positivo residuo. Mercato indeciso, trading range probabile."
         bordino = "#95A5A6" # Grey
 
-    cw = min(call_walls) if call_walls else None
-    pw = max(put_walls) if put_walls else None
-    cw_txt = f"{int(cw)}" if cw else "-"
-    pw_txt = f"{int(pw)}" if pw else "-"
+    # Formattazione livelli
+    cw_txt = f"{int(cw_val)}" if cw_val else "-"
+    pw_txt = f"{int(pw_val)}" if pw_val else "-"
 
     return {
         "spot": spot,
@@ -304,30 +305,39 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
         df_s = df.sort_values("WallScore", ascending=False)
         levels = []
         for k in df_s["strike"]:
-            # Se min_dist è ~0, prendiamo tutto (disattiva filtro spaziale)
             if min_dist < 0.01:
                 levels.append(k)
             else:
-                # Altrimenti controlliamo la distanza
                 if not levels or all(abs(k - x) > min_dist for x in levels):
                     levels.append(k)
-            
-            # Limite massimo 3 livelli
             if len(levels) >= 3: break
         return levels
     # -------------------------------------
 
-    # Calcolo distanze indipendenti per Call e Put
     min_dist_call_val = spot * (dist_min_call_pct / 100.0)
     min_dist_put_val = spot * (dist_min_put_pct / 100.0)
     
     calls_above = calls_agg[calls_agg["strike"] > spot].copy()
     puts_below = puts_agg[puts_agg["strike"] < spot].copy()
     
-    call_walls = get_top_levels(calls_above, min_dist_call_val)
-    put_walls = get_top_levels(puts_below, min_dist_put_val)
+    # 1. Trova i muri candidati (Top 3 distanziati)
+    call_walls_candidates = get_top_levels(calls_above, min_dist_call_val)
+    put_walls_candidates = get_top_levels(puts_below, min_dist_put_val)
 
-    rep = get_analysis_content(spot, data, call_walls, put_walls, final_flip)
+    # 2. LOGICA "KING WALL": Seleziona il più forte in assoluto tra i candidati
+    best_cw = None
+    if call_walls_candidates:
+        # Filtra il DF per prendere solo gli strike candidati e trova quello con WallScore massimo
+        subset = calls_agg[calls_agg['strike'].isin(call_walls_candidates)]
+        best_cw = subset.sort_values("WallScore", ascending=False).iloc[0]["strike"]
+
+    best_pw = None
+    if put_walls_candidates:
+        subset = puts_agg[puts_agg['strike'].isin(put_walls_candidates)]
+        best_pw = subset.sort_values("WallScore", ascending=False).iloc[0]["strike"]
+
+    # Genera Report
+    rep = get_analysis_content(spot, data, best_cw, best_pw, final_flip)
 
     # Setup Figura
     fig = plt.figure(figsize=(13, 9.5))
@@ -351,13 +361,17 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.35, width=bar_width, label="Put OI", zorder=2)
     ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.35, width=bar_width, label="Call OI", zorder=2)
     
-    # Walls
-    for w in call_walls:
+    # Walls (Disegna tutti i top 3 candidati)
+    for w in call_walls_candidates:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#21618C", alpha=0.8, width=bar_width, zorder=3) 
-    for w in put_walls:
+        # Se è il best_cw lo facciamo leggermente più scuro/opaco
+        alpha_val = 1.0 if w == best_cw else 0.6
+        ax.bar(w, val, color="#21618C", alpha=alpha_val, width=bar_width, zorder=3) 
+        
+    for w in put_walls_candidates:
         val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#D35400", alpha=0.8, width=bar_width, zorder=3) 
+        alpha_val = 1.0 if w == best_pw else 0.6
+        ax.bar(w, val, color="#D35400", alpha=alpha_val, width=bar_width, zorder=3) 
 
     # Profilo GEX (Linea Dotted)
     ax2 = ax.twinx()
@@ -374,12 +388,17 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     y_offset = max_y * 0.03
     bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#D5D8DC", alpha=0.95)
 
-    for w in call_walls:
+    for w in call_walls_candidates:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
-        ax.text(w, val + y_offset, f"RES {int(w)}", color="#21618C", fontsize=8, fontweight='bold', ha='center', va='bottom', bbox=bbox_props, zorder=20)
-    for w in put_walls:
+        prefix = "★ RES" if w == best_cw else "RES"
+        font_w = 'bold' if w == best_cw else 'normal'
+        ax.text(w, val + y_offset, f"{prefix} {int(w)}", color="#21618C", fontsize=8, fontweight=font_w, ha='center', va='bottom', bbox=bbox_props, zorder=20)
+        
+    for w in put_walls_candidates:
         val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
-        ax.text(w, val - y_offset, f"SUP {int(w)}", color="#D35400", fontsize=8, fontweight='bold', ha='center', va='top', bbox=bbox_props, zorder=20)
+        prefix = "★ SUP" if w == best_pw else "SUP"
+        font_w = 'bold' if w == best_pw else 'normal'
+        ax.text(w, val - y_offset, f"{prefix} {int(w)}", color="#D35400", fontsize=8, fontweight=font_w, ha='center', va='top', bbox=bbox_props, zorder=20)
 
     ax.set_ylabel("Aggregated Open Interest", fontsize=10, fontweight='bold', color="#777")
     ax2.set_ylabel("Net Gamma Exposure", fontsize=10, color="#777")
@@ -416,9 +435,13 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     flip_text = f"FLIP STRUTTURALE: {rep['flip_desc']}"
     ax_rep.text(0.02, 0.72, flip_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
     
-    # Riga 3: Key Levels (Sinistra)
-    levels_text = f"RESISTENZA CHIAVE: {rep['cw']}   |   SUPPORTO CHIAVE: {rep['pw']}"
-    ax_rep.text(0.02, 0.60, levels_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # Riga 3: Key Levels (Colorati e Distinti)
+    # Resistenza (Blu)
+    ax_rep.text(0.02, 0.60, f"RESISTENZA CHIAVE (MAX GEX): {rep['cw']}", fontsize=10, fontweight='bold', color="#21618C", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # Divisore
+    ax_rep.text(0.28, 0.60, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
+    # Supporto (Rosso)
+    ax_rep.text(0.30, 0.60, f"SUPPORTO CHIAVE (MAX GEX): {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
     # --- TIMESTAMP E RANGE ---
     all_exps = pd.concat([calls["expiry"], puts["expiry"]]).unique()
@@ -457,7 +480,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning  v20 Swing ")
+st.title("⚡ GEX Positioning Pro v20.5 (Swing)")
 st.markdown("Analisi Strutturale Swing (0-45gg) - Dati Yahoo Filtrati.")
 
 col1, col2 = st.columns([1, 2])
@@ -482,12 +505,10 @@ with col1:
 
     range_pct = st.slider("Range % Prezzo", 10, 40, 20, help="Filtra strike troppo lontani per pulire il grafico.")
     
-    # --- MODIFICA: Due Slider separati per Calls e Puts ---
     st.write("---")
     st.write("🧩 Filtri Muri (0 = Mostra tutto)")
     dist_call = st.slider("Dist. Min. Muri CALL (%)", 0, 10, 2)
     dist_put = st.slider("Dist. Min. Muri PUT (%)", 0, 10, 2)
-    # ------------------------------------------------------------
 
     btn_calc = st.button("🚀 Analizza Struttura", type="primary", use_container_width=True)
 
@@ -512,7 +533,6 @@ with col2:
                         rf_used = data_res.get('risk_free_used', 0.05)
                         st.caption(f"ℹ️ Parametri calcolati: Risk-Free Rate {rf_used*100:.2f}% (da T-Bill ^IRX)")
 
-                        # Passiamo entrambi i parametri di distanza
                         fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_call, dist_put)
                         st.pyplot(fig)
                         
