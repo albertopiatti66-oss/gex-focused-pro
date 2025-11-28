@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.5 (Swing Ready Edition)
-- FIX: Selezione scadenze intelligente (0-45gg).
-- FIX: Filtro dati "spazzatura" (prezzi < 0.01 o zero bid).
-- FIX: Volatilità Implicita dinamica (media strike attivi).
-- FIX: Tasso Risk-Free dinamico da T-Bill (^IRX).
-- UPDATE: Timestamp e Range date posizionati DI FIANCO ai livelli chiave.
-- UPDATE: Distanza Muri INDIPENDENTE per Call e Put.
-- LOGIC CHANGE: Livelli chiave basati su POTENZA (Max GEX) e non vicinanza.
+GEX Positioning v20.6 (Swing Ready Edition)
+- FIX: Layout Report (Nessuna sovrapposizione testo).
+- FIX: Rimosso testo "(MAX GEX)" per pulizia.
+- FIX: Timestamp allineato a destra per evitare collisioni.
+- LOGIC: Livelli chiave basati su POTENZA (Max GEX).
 - VISUAL: Livelli chiave colorati (Blu/Rosso) nel report.
 """
 
@@ -63,14 +60,13 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         exps = tk.options
         if not exps: return None, None, "Nessuna scadenza trovata (Yahoo API)."
         
-        # --- FIX 1: FILTRO SCADENZE INTELLIGENTE (SWING TRADING 0-45 GG) ---
+        # --- FILTRO SCADENZE INTELLIGENTE (SWING TRADING 0-45 GG) ---
         today = datetime.now().date()
         valid_exps = []
         for e in exps:
             try:
                 edate = datetime.strptime(e, "%Y-%m-%d").date()
                 days_to = (edate - today).days
-                # Prendiamo scadenze da oggi fino a 45 giorni (Swing Window)
                 if 0 <= days_to <= 45:
                     valid_exps.append(e)
             except:
@@ -80,7 +76,6 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
             return None, None, "Nessuna scadenza trovata nei prossimi 45 giorni."
 
         target_exps = valid_exps[:n_expirations]
-        # -------------------------------------------------------------------
         
         all_calls = []
         all_puts = []
@@ -97,11 +92,9 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
                 c = chain.calls.copy()
                 p = chain.puts.copy()
                 
-                # --- FIX 2: FILTRO DATI SPAZZATURA (Cleanup) ---
-                # Rimuove opzioni morte (prezzo < 1 cent o bid a zero)
+                # --- FILTRO DATI SPAZZATURA ---
                 c = c[(c['lastPrice'] >= 0.01) | (c['bid'] > 0)]
                 p = p[(p['lastPrice'] >= 0.01) | (p['bid'] > 0)]
-                # -----------------------------------------------
 
                 c["expiry"] = exp
                 p["expiry"] = exp
@@ -127,11 +120,10 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         df["openInterest"] = pd.to_numeric(df["openInterest"], errors="coerce")
         df["impliedVolatility"] = pd.to_numeric(df["impliedVolatility"], errors="coerce")
         
-        # --- FIX 3: VOLATILITÀ MEDIA DINAMICA ---
+        # --- VOLATILITÀ MEDIA DINAMICA ---
         mean_iv = df[df["impliedVolatility"] > 0.001]["impliedVolatility"].mean()
         fill_val = mean_iv if not pd.isna(mean_iv) else 0.3
         df["impliedVolatility"] = df["impliedVolatility"].replace(0, fill_val)
-        # ----------------------------------------
 
     lower_bound = spot_price * (1 - range_pct/100)
     upper_bound = spot_price * (1 + range_pct/100)
@@ -141,13 +133,12 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
     return calls, puts, None
 
 def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1, min_oi_ratio=0.05):
-    # --- FIX 4: RISK FREE RATE DINAMICO ---
+    # --- RISK FREE RATE DINAMICO ---
     try:
         irx = yf.Ticker("^IRX").history(period="1d")["Close"].iloc[-1]
         risk_free = irx / 100 
     except:
         risk_free = 0.045
-    # --------------------------------------
 
     now_dt = datetime.now(timezone.utc)
 
@@ -327,7 +318,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     # 2. LOGICA "KING WALL": Seleziona il più forte in assoluto tra i candidati
     best_cw = None
     if call_walls_candidates:
-        # Filtra il DF per prendere solo gli strike candidati e trova quello con WallScore massimo
         subset = calls_agg[calls_agg['strike'].isin(call_walls_candidates)]
         best_cw = subset.sort_values("WallScore", ascending=False).iloc[0]["strike"]
 
@@ -361,10 +351,9 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.35, width=bar_width, label="Put OI", zorder=2)
     ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.35, width=bar_width, label="Call OI", zorder=2)
     
-    # Walls (Disegna tutti i top 3 candidati)
+    # Walls
     for w in call_walls_candidates:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
-        # Se è il best_cw lo facciamo leggermente più scuro/opaco
         alpha_val = 1.0 if w == best_cw else 0.6
         ax.bar(w, val, color="#21618C", alpha=alpha_val, width=bar_width, zorder=3) 
         
@@ -373,7 +362,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
         alpha_val = 1.0 if w == best_pw else 0.6
         ax.bar(w, val, color="#D35400", alpha=alpha_val, width=bar_width, zorder=3) 
 
-    # Profilo GEX (Linea Dotted)
+    # Profilo GEX
     ax2 = ax.twinx()
     gex_clean = gex_strike.dropna().sort_values("strike")
     
@@ -383,7 +372,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     if final_flip:
         ax.axvline(final_flip, color="#7F8C8D", ls="-.", lw=1.2, label="Flip", zorder=6)
 
-    # Etichette
+    # Etichette Grafico
     max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100
     y_offset = max_y * 0.03
     bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#D5D8DC", alpha=0.95)
@@ -417,7 +406,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=9, edgecolor="#EEEEEE")
     ax.set_title(f"{symbol} STRUCTURAL GEX PROFILE (Next {n_exps} Active Swing Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#444")
 
-    # --- SUBPLOT 2: REPORT MINIMALISTA ---
+    # --- SUBPLOT 2: REPORT MINIMALISTA (LAYOUT FIX) ---
     ax_rep = fig.add_subplot(gs[1])
     ax_rep.axis("off")
     
@@ -435,27 +424,25 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     flip_text = f"FLIP STRUTTURALE: {rep['flip_desc']}"
     ax_rep.text(0.02, 0.72, flip_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
     
-    # Riga 3: Key Levels (Colorati e Distinti)
-    # Resistenza (Blu)
-    ax_rep.text(0.02, 0.60, f"RESISTENZA CHIAVE (MAX GEX): {rep['cw']}", fontsize=10, fontweight='bold', color="#21618C", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    # Divisore
-    ax_rep.text(0.28, 0.60, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
-    # Supporto (Rosso)
-    ax_rep.text(0.30, 0.60, f"SUPPORTO CHIAVE (MAX GEX): {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # Riga 3: Key Levels (Migliorata la spaziatura e rimosso MAX GEX)
+    # 1. Resistenza (Sinistra)
+    ax_rep.text(0.02, 0.60, f"RESISTENZA CHIAVE: {rep['cw']}", fontsize=10, fontweight='bold', color="#21618C", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    
+    # 2. Divisore (Spostato più a destra)
+    ax_rep.text(0.32, 0.60, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
+    
+    # 3. Supporto (Spostato più a destra per evitare sovrapposizioni)
+    ax_rep.text(0.34, 0.60, f"SUPPORTO CHIAVE: {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
-    # --- TIMESTAMP E RANGE ---
+    # --- TIMESTAMP (ALLINEATO A DESTRA) ---
     all_exps = pd.concat([calls["expiry"], puts["expiry"]]).unique()
     sorted_exps = sorted([pd.to_datetime(d) for d in all_exps])
-    
-    if sorted_exps:
-        range_str = f"{sorted_exps[0].strftime('%d/%m')} - {sorted_exps[-1].strftime('%d/%m/%Y')}"
-    else:
-        range_str = "N/D"
-
+    range_str = f"{sorted_exps[0].strftime('%d/%m')} - {sorted_exps[-1].strftime('%d/%m/%Y')}" if sorted_exps else "N/D"
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
     timestamp_text = f"Report prodotto il {now_str}  |  Range Scadenze: {range_str}"
     
-    ax_rep.text(0.55, 0.60, timestamp_text, fontsize=9, color="#888", fontstyle='italic', fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # FIX: ha='right' ancora il testo al bordo destro (0.98), evitando che sbatta contro il supporto
+    ax_rep.text(0.98, 0.60, timestamp_text, fontsize=9, color="#888", fontstyle='italic', fontfamily='sans-serif', ha='right', transform=ax_rep.transAxes)
     # ---------------------------------------------
     
     # Box Commento
@@ -480,7 +467,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning Pro v20.5 (Swing)")
+st.title("⚡ GEX Positioning Pro v20.6 (Swing)")
 st.markdown("Analisi Strutturale Swing (0-45gg) - Dati Yahoo Filtrati.")
 
 col1, col2 = st.columns([1, 2])
