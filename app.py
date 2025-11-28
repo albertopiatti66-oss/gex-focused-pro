@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.8 (Swing Ready Edition - Logic Update)
-- UPDATE: Logica Report corretta (Short Gamma = Accelerazione/Squeeze, non solo Ribasso).
-- FIX: Layout Report (Scritte avvicinate).
-- LOGIC: Livelli chiave basati su POTENZA.
-- VISUAL: Livelli chiave colorati e analisi dinamica.
+GEX Positioning v20.9 (GPI & Squeeze Edition)
+- NEW: Calcolo GPI (Gamma Pressure Index) su dati Yahoo.
+- LOGIC: GPI mostra la % di Volume Giornaliero assorbita dall'Hedging per un movimento dell'1%.
+- UPDATE: Logica Squeeze integrata con la pressione del volume.
 """
 
 import streamlit as st
@@ -23,23 +22,30 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.8", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
 # -----------------------------------------------------------------------------
 
-def get_spot_price(ticker):
+def get_market_data(ticker):
+    """Scarica Spot Price e Volume Medio (ADV) a 20 giorni."""
     try:
         tk = yf.Ticker(ticker)
-        price = tk.fast_info.get("last_price")
-        if not price:
-            hist = tk.history(period="1d")
-            if not hist.empty:
-                price = hist["Close"].iloc[-1]
-        return float(price) if price else None
+        # Scarichiamo 1 mese di storia per calcolare la media volumi
+        hist = tk.history(period="1mo")
+        
+        if hist.empty:
+            return None, None
+        
+        spot = hist["Close"].iloc[-1]
+        
+        # Calcolo Average Daily Volume (ultimi 20 giorni)
+        adv = hist["Volume"].tail(20).mean()
+        
+        return float(spot), float(adv)
     except Exception:
-        return None
+        return None, None
 
 def vectorized_bs_gamma(S, K, T, r, sigma):
     """Calcolo vettorializzato del Gamma Black-Scholes."""
@@ -120,7 +126,6 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         df["openInterest"] = pd.to_numeric(df["openInterest"], errors="coerce")
         df["impliedVolatility"] = pd.to_numeric(df["impliedVolatility"], errors="coerce")
         
-        # Volatilità media dinamica per i dati mancanti
         mean_iv = df[df["impliedVolatility"] > 0.001]["impliedVolatility"].mean()
         fill_val = mean_iv if not pd.isna(mean_iv) else 0.3
         df["impliedVolatility"] = df["impliedVolatility"].replace(0, fill_val)
@@ -132,7 +137,7 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
 
     return calls, puts, None
 
-def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1):
+def calculate_aggregated_gex(calls, puts, spot, adv, call_sign=1, put_sign=-1):
     # --- RISK FREE RATE DINAMICO ---
     try:
         irx = yf.Ticker("^IRX").history(period="1d")["Close"].iloc[-1]
@@ -170,6 +175,20 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1):
     abs_total = abs(total_call_gex) + abs(total_put_gex)
     net_gamma_bias = (total_gex / abs_total * 100) if abs_total > 0 else 0
 
+    # --- CALCOLO GPI (GAMMA PRESSURE INDEX) ---
+    # GEX Totale nel codice è: Valore nozionale da hedgiare per movimento di $1 (se spot ~ strike).
+    # Per standardizzare, calcoliamo l'hedge necessario per un movimento dell'1% del sottostante.
+    # 1% move = Spot * 0.01
+    # Hedge Needed ($) = abs(Total GEX per $1) * (Spot * 0.01)
+    # GPI = (Hedge Needed / Daily Dollar Volume) * 100
+    
+    gpi_val = 0
+    if adv > 0:
+        daily_dollar_volume = adv * spot
+        hedge_1pct_dollar = abs(total_gex) * (spot * 0.01)
+        gpi_val = (hedge_1pct_dollar / daily_dollar_volume) * 100
+    # ------------------------------------------
+
     # Calcolo Gamma Flip
     gamma_flip = None
     if call_sign == 1 and put_sign == -1 and abs(total_gex) > 1000:
@@ -189,11 +208,12 @@ def calculate_aggregated_gex(calls, puts, spot, call_sign=1, put_sign=-1):
         "gamma_flip": gamma_flip,
         "net_gamma_bias": net_gamma_bias,
         "total_gex": total_gex,
+        "gpi": gpi_val,
         "risk_free_used": risk_free
     }, None
 
 # -----------------------------------------------------------------------------
-# 2. REPORT ANALITICO (LOGICA AGGIORNATA V20.8)
+# 2. REPORT ANALITICO (CON GPI)
 # -----------------------------------------------------------------------------
 
 def find_zero_crossing(df, spot):
@@ -213,11 +233,10 @@ def find_zero_crossing(df, spot):
 def get_analysis_content(spot, data, cw_val, pw_val, synced_flip):
     tot_gex = data['total_gex']
     net_bias = data['net_gamma_bias']
+    gpi = data['gpi']
     effective_flip = synced_flip
     
-    # 1. Analisi del Regime (Il "Terreno di gioco")
-    # GEX Positivo = Asfalto asciutto (Tenuta strada)
-    # GEX Negativo = Ghiaccio (Sbandate)
+    # Analisi Regime
     if tot_gex > 0:
         regime_status = "LONG GAMMA (Stabile)"
         regime_color = "#2E8B57" # Verde scuro
@@ -225,60 +244,70 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip):
         regime_status = "SHORT GAMMA (Instabile)"
         regime_color = "#C0392B" # Rosso scuro
 
-    # 2. Analisi della Posizione rispetto al Flip
+    # Analisi GPI
+    gpi_txt = f"{gpi:.1f}%"
+    gpi_desc_short = "Basso"
+    if gpi > 3.0: gpi_desc_short = "MEDIO"
+    if gpi > 8.0: gpi_desc_short = "ALTO"
+    if gpi > 15.0: gpi_desc_short = "ESTREMO"
+
+    # Analisi Flip
     safe_zone = False
     if effective_flip is not None:
         if spot > effective_flip:
             safe_zone = True
-            flip_desc = f"Spot SOPRA il Flip ({effective_flip:.0f}) -> Zona di Controllo"
+            flip_desc = f"Spot SOPRA il Flip ({effective_flip:.0f})"
         else:
             safe_zone = False
-            flip_desc = f"Spot SOTTO il Flip ({effective_flip:.0f}) -> Zona di Accelerazione"
+            flip_desc = f"Spot SOTTO il Flip ({effective_flip:.0f})"
     else:
         flip_desc = "Flip indefinito"
 
-    # 3. Logica "Scommessa" (LOGICA AGGIORNATA PER SQUEEZE/VOLATILITÀ)
     scommessa = ""
     dettaglio = ""
     bordino = "grey"
 
-    # CASO A: LONG GAMMA (Zona Verde)
+    # Logica Combinata (Regime + GPI)
+    # CASO A: LONG GAMMA
     if tot_gex > 0:
-        scommessa = "🛡️ POSITIONING: STABILIZZAZIONE / MEAN REVERSION"
-        dettaglio = (
-            f"Il mercato è in regime {regime_status}. I Dealer forniscono liquidità, "
-            "ostacolando i movimenti violenti. Il prezzo tende a tornare verso la media. "
-            "Ottimo per strategie 'Buy the Dip' o vendita di volatilità."
-        )
-        bordino = "#2E8B57" # SeaGreen
+        if gpi > 10:
+            scommessa = "🛡️ POSITIONING: PINNING (Prezzo Bloccato)"
+            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). I Dealer stanno dominando il volume e bloccano il prezzo. Volatilità soppressa con forza. Trading range stretto."
+        else:
+            scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"
+            dettaglio = f"Regime Long Gamma classico. I Dealer ammortizzano i movimenti. Strategie 'Buy the Dip' favorite. GPI contenuto ({gpi_txt}), liquidità sufficiente."
+        bordino = "#2E8B57"
 
-    # CASO B: SHORT GAMMA (Zona Rossa - Logica Squeeze/Crash)
+    # CASO B: SHORT GAMMA
     elif tot_gex < 0:
-        scommessa = "🔥 POSITIONING: VOLATILE / ACCELERAZIONE (Squeeze Risk)"
-        dettaglio = (
-            f"ATTENZIONE: Regime {regime_status}. Il mercato è privo di freni. "
-            "Se il prezzo rompe i minimi -> RISCHIO CRASH veloce. "
-            "Se il prezzo rimbalza con forza -> RISCHIO GAMMA SQUEEZE verso l'alto. "
-            "I Dealer sono costretti a inseguire il trend, amplificando qualsiasi movimento."
-        )
-        bordino = "#C0392B" # Red
+        # Pressione Volumetrica
+        if gpi > 8.0:
+            scommessa = "🔥 POSITIONING: SQUEEZE ALERT / CRASH"
+            dettaglio = (
+                f"ALLARME ROSSO: Short Gamma + GPI Alto ({gpi_txt}). "
+                "I Dealer devono muovere volumi enormi rispetto alla media per coprirsi. "
+                "L'impatto sul prezzo sarà violento. Rischio esplosione (Squeeze) o crollo verticale."
+            )
+            bordino = "#8B0000" # Dark Red
+        else:
+            scommessa = "🔥 POSITIONING: VOLATILE / ACCELERAZIONE"
+            dettaglio = (
+                f"Short Gamma attivo. Mancano i freni. "
+                f"GPI moderato ({gpi_txt}), quindi c'è ancora liquidità per assorbire un po' gli urti, "
+                "ma se il trend parte, i Dealer lo accelereranno."
+            )
+            bordino = "#C0392B"
 
-    # CASO C: ZONA MISTA (Sopra il Flip ma Gamma Negativo - Raro ma pericoloso)
+    # CASO C: ZONA MISTA
     elif safe_zone and tot_gex < 0:
-        scommessa = "⚠️ POSITIONING: FRAGILE (Possibile Top)"
-        dettaglio = (
-            "Siamo tecnicamente sopra il Flip, ma il Gamma totale è negativo. "
-            "Significa che la salita è 'vuota', priva di supporto strutturale. "
-            "Mancanza di ammortizzatori sotto il prezzo. Prudenza."
-        )
-        bordino = "#E67E22" # Orange
+        scommessa = "⚠️ POSITIONING: FRAGILE"
+        dettaglio = "Siamo sopra il Flip ma con Gamma negativo. Salita priva di fondamenta strutturali. Attenzione alle inversioni improvvise."
+        bordino = "#E67E22"
 
-    # Formattazione livelli
     cw_txt = f"{int(cw_val)}" if cw_val else "-"
     pw_txt = f"{int(pw_val)}" if pw_val else "-"
-    
-    if net_bias > 5: bias_desc = f"Call Dom. (+{net_bias:.0f}%)"
-    elif net_bias < -5: bias_desc = f"Put Dom. ({net_bias:.0f}%)"
+    if net_bias > 5: bias_desc = f"Call (+{net_bias:.0f}%)"
+    elif net_bias < -5: bias_desc = f"Put ({net_bias:.0f}%)"
     else: bias_desc = "Neutrale"
 
     return {
@@ -289,6 +318,8 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip):
         "flip_desc": flip_desc,
         "cw": cw_txt,
         "pw": pw_txt,
+        "gpi": gpi_txt,
+        "gpi_desc": gpi_desc_short,
         "scommessa": scommessa,
         "dettaglio": dettaglio,
         "bordino": bordino
@@ -312,7 +343,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     calls_agg["WallScore"] = calls_agg["GEX"].abs()
     puts_agg["WallScore"] = puts_agg["GEX"].abs()
     
-    # Selezione Muri
     def get_top_levels(df, min_dist):
         df_s = df.sort_values("WallScore", ascending=False)
         levels = []
@@ -344,7 +374,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
         subset = puts_agg[puts_agg['strike'].isin(put_walls_candidates)]
         best_pw = subset.sort_values("WallScore", ascending=False).iloc[0]["strike"]
 
-    # Genera Report (NUOVO)
     rep = get_analysis_content(spot, data, best_cw, best_pw, final_flip)
 
     # Setup Figura
@@ -358,18 +387,15 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
     x_max = max(calls_agg["strike"].max(), puts_agg["strike"].max())
     
-    # SFONDO ADATTIVO
     if final_flip:
         if total_gex > 0:
             ax.axvspan(final_flip, x_max, facecolor='#E8F5E9', alpha=0.45, zorder=0)
         else:
             ax.axvspan(x_min, final_flip, facecolor='#FFEBEE', alpha=0.45, zorder=0)
     
-    # OI Aggregato
     ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.35, width=bar_width, label="Put OI", zorder=2)
     ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.35, width=bar_width, label="Call OI", zorder=2)
     
-    # Walls Highlight
     for w in call_walls_candidates:
         val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
         alpha_val = 1.0 if w == best_cw else 0.6
@@ -380,7 +406,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
         alpha_val = 1.0 if w == best_pw else 0.6
         ax.bar(w, val, color="#D35400", alpha=alpha_val, width=bar_width, zorder=3) 
 
-    # Profilo GEX
     ax2 = ax.twinx()
     gex_clean = gex_strike.dropna().sort_values("strike")
     ax2.plot(gex_clean["strike"], gex_clean["GEX"], color='#999999', linestyle=':', linewidth=2, label="Net GEX Structure", zorder=5)
@@ -389,7 +414,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     if final_flip:
         ax.axvline(final_flip, color="#7F8C8D", ls="-.", lw=1.2, label="Flip", zorder=6)
 
-    # Etichette Grafico
     max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100
     y_offset = max_y * 0.03
     bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="#D5D8DC", alpha=0.95)
@@ -419,9 +443,9 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     if final_flip: legend_elements.append(Line2D([0], [0], color='#7F8C8D', lw=1.2, ls='-.', label=f'Flip {final_flip:.0f}'))
     
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=9, edgecolor="#EEEEEE")
-    ax.set_title(f"{symbol} STRUCTURAL GEX PROFILE (Next {n_exps} Active Swing Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#444")
+    ax.set_title(f"{symbol} GEX & GPI PROFILE (Next {n_exps} Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#444")
 
-    # --- SUBPLOT 2: REPORT AGGIORNATO ---
+    # --- SUBPLOT 2: REPORT CON GPI ---
     ax_rep = fig.add_subplot(gs[1])
     ax_rep.axis("off")
     
@@ -435,14 +459,20 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     # Riga 1 (Destra): Bias
     ax_rep.text(0.57, 0.88, f"BIAS: {rep['bias']}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
-    # Riga 2: Flip
-    flip_text = f"FLIP STRUTTURALE: {rep['flip_desc']}"
-    ax_rep.text(0.02, 0.72, flip_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # Riga 2: Flip e Key Levels
+    ax_rep.text(0.02, 0.72, f"FLIP: {rep['flip_desc']}", fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
     
-    # Riga 3: Key Levels
-    ax_rep.text(0.02, 0.60, f"RESISTENZA CHIAVE: {rep['cw']}", fontsize=10, fontweight='bold', color="#21618C", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(0.26, 0.60, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
-    ax_rep.text(0.28, 0.60, f"SUPPORTO CHIAVE: {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.02, 0.60, f"RES: {rep['cw']}", fontsize=10, fontweight='bold', color="#21618C", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.18, 0.60, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
+    ax_rep.text(0.20, 0.60, f"SUP: {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    
+    # --- NUOVO: GPI INDICATOR ---
+    # Posizionato a destra, in evidenza
+    gpi_color = "#333"
+    if "ALTO" in rep['gpi_desc'] or "ESTREMO" in rep['gpi_desc']: gpi_color = "#C0392B"
+    
+    ax_rep.text(0.70, 0.72, "GPI (Pressure Index):", fontsize=10, color="#555", transform=ax_rep.transAxes)
+    ax_rep.text(0.86, 0.72, f"{rep['gpi']} ({rep['gpi_desc']})", fontsize=10, fontweight='bold', color=gpi_color, transform=ax_rep.transAxes)
 
     # Timestamp
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -470,18 +500,23 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.8 (Swing)")
-st.markdown("Analisi Strutturale Swing (0-45gg) - Dati Yahoo Filtrati.")
+st.title("⚡ GEX Positioning v20.9 (GPI Edition)")
+st.markdown("Analisi Strutturale con **GPI (Gamma Pressure Index)**.")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
     st.markdown("### ⚙️ Setup Positioning")
     symbol = st.text_input("Ticker", value="SPY").upper()
-    spot = get_spot_price(symbol)
+    
+    # Recupero Dati Spot + ADV
+    spot, adv = get_market_data(symbol)
     
     if spot:
         st.success(f"Spot: ${spot:.2f}")
+        if adv:
+            adv_mil = adv / 1_000_000
+            st.caption(f"Vol. Medio (20gg): {adv_mil:.1f}M azioni")
     
     st.markdown("---")
     n_exps = st.slider("Scadenze da Aggregare", 4, 12, 8, help="Seleziona fino a X scadenze, ma il sistema filtrerà solo quelle entro 45 giorni.")
@@ -510,9 +545,9 @@ with col2:
         if err:
             st.error(err)
         else:
-            with st.spinner("Calcolo GEX Strutturale..."):
+            with st.spinner("Calcolo GEX Strutturale & GPI..."):
                 data_res, err_calc = calculate_aggregated_gex(
-                    calls, puts, spot, 
+                    calls, puts, spot, adv,
                     call_sign=call_sign, put_sign=put_sign
                 )
                 
@@ -521,13 +556,13 @@ with col2:
                 else:
                     try:
                         rf_used = data_res.get('risk_free_used', 0.05)
-                        st.caption(f"ℹ️ Parametri: Risk-Free Rate {rf_used*100:.2f}% (T-Bill)")
+                        st.caption(f"ℹ️ Parametri: Risk-Free {rf_used*100:.2f}% | GPI Ratio Mode")
 
                         fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_call, dist_put)
                         st.pyplot(fig)
                         
                         buf = BytesIO()
                         fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
-                        st.download_button("💾 Scarica Report Positioning", buf.getvalue(), f"GEX_STRUCT_{symbol}.png", "image/png", use_container_width=True)
+                        st.download_button("💾 Scarica Report con GPI", buf.getvalue(), f"GEX_GPI_{symbol}.png", "image/png", use_container_width=True)
                     except Exception as e:
                         st.error(f"Errore generazione grafico: {e}")
