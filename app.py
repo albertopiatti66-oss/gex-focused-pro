@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.3 (Swing Ready Edition)
+GEX Positioning v20.4 (Swing Ready Edition)
 - FIX: Selezione scadenze intelligente (0-45gg).
 - FIX: Filtro dati "spazzatura" (prezzi < 0.01 o zero bid).
 - FIX: Volatilità Implicita dinamica (media strike attivi).
 - FIX: Tasso Risk-Free dinamico da T-Bill (^IRX).
 - UPDATE: Timestamp e Range date posizionati DI FIANCO ai livelli chiave.
-- UPDATE: Distanza Muri impostabile a 0 (disattiva filtro spaziale).
+- UPDATE: Distanza Muri INDIPENDENTE per Call e Put.
 """
 
 import streamlit as st
@@ -285,7 +285,7 @@ def get_analysis_content(spot, data, call_walls, put_walls, synced_flip):
 # 3. PLOTTING UNIFICATO (AGGREGATO)
 # -----------------------------------------------------------------------------
 
-def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
+def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_min_put_pct):
     calls, puts = data["calls"], data["puts"]
     gex_strike = data["gex_by_strike"]
     total_gex = data['total_gex'] 
@@ -299,7 +299,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
     calls_agg["WallScore"] = calls_agg["GEX"].abs()
     puts_agg["WallScore"] = puts_agg["GEX"].abs()
     
-    # --- LOGICA GESTIONE DISTANZA MURI (AGGIORNATA) ---
+    # --- LOGICA GESTIONE DISTANZA MURI ---
     def get_top_levels(df, min_dist):
         df_s = df.sort_values("WallScore", ascending=False)
         levels = []
@@ -315,15 +315,17 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
             # Limite massimo 3 livelli
             if len(levels) >= 3: break
         return levels
-    # ---------------------------------------------------
+    # -------------------------------------
 
-    min_dist_val = spot * (dist_min_pct / 100.0)
+    # Calcolo distanze indipendenti per Call e Put
+    min_dist_call_val = spot * (dist_min_call_pct / 100.0)
+    min_dist_put_val = spot * (dist_min_put_pct / 100.0)
     
     calls_above = calls_agg[calls_agg["strike"] > spot].copy()
     puts_below = puts_agg[puts_agg["strike"] < spot].copy()
     
-    call_walls = get_top_levels(calls_above, min_dist_val)
-    put_walls = get_top_levels(puts_below, min_dist_val)
+    call_walls = get_top_levels(calls_above, min_dist_call_val)
+    put_walls = get_top_levels(puts_below, min_dist_put_val)
 
     rep = get_analysis_content(spot, data, call_walls, put_walls, final_flip)
 
@@ -455,7 +457,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_pct):
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning Pro v20.3 (Swing)")
+st.title("⚡ GEX Positioning Pro v20.4 (Swing)")
 st.markdown("Analisi Strutturale Swing (0-45gg) - Dati Yahoo Filtrati.")
 
 col1, col2 = st.columns([1, 2])
@@ -480,8 +482,11 @@ with col1:
 
     range_pct = st.slider("Range % Prezzo", 10, 40, 20, help="Filtra strike troppo lontani per pulire il grafico.")
     
-    # --- MODIFICA: Slider parte da 0 per disattivare il filtro ---
-    dist_min = st.slider("Dist. Muri Minima (%)", 0, 10, 2, help="0 = Nessun filtro (mostra anche livelli adiacenti).")
+    # --- MODIFICA: Due Slider separati per Calls e Puts ---
+    st.write("---")
+    st.write("🧩 Filtri Muri (0 = Mostra tutto)")
+    dist_call = st.slider("Dist. Min. Muri CALL (%)", 0, 10, 2)
+    dist_put = st.slider("Dist. Min. Muri PUT (%)", 0, 10, 2)
     # ------------------------------------------------------------
 
     btn_calc = st.button("🚀 Analizza Struttura", type="primary", use_container_width=True)
@@ -507,7 +512,8 @@ with col2:
                         rf_used = data_res.get('risk_free_used', 0.05)
                         st.caption(f"ℹ️ Parametri calcolati: Risk-Free Rate {rf_used*100:.2f}% (da T-Bill ^IRX)")
 
-                        fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_min)
+                        # Passiamo entrambi i parametri di distanza
+                        fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_call, dist_put)
                         st.pyplot(fig)
                         
                         st.markdown("---")
