@@ -457,7 +457,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning Pro v20.4 (Swing)")
+st.title("⚡ GEX Positioning  v20 Swing ")
 st.markdown("Analisi Strutturale Swing (0-45gg) - Dati Yahoo Filtrati.")
 
 col1, col2 = st.columns([1, 2])
