@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.6 (Swing Ready Edition)
-- FIX: Layout Report (Nessuna sovrapposizione testo).
-- FIX: Rimosso testo "(MAX GEX)" per pulizia.
-- FIX: Timestamp allineato a destra per evitare collisioni.
+GEX Positioning v20.7 (Swing Ready Edition)
+- FIX: Layout Report (Scritte avvicinate per evitare sovrapposizioni).
+- FIX: Compattamento orizzontale Resistenza/Supporto.
 - LOGIC: Livelli chiave basati su POTENZA (Max GEX).
 - VISUAL: Livelli chiave colorati (Blu/Rosso) nel report.
 """
@@ -406,7 +405,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=9, edgecolor="#EEEEEE")
     ax.set_title(f"{symbol} STRUCTURAL GEX PROFILE (Next {n_exps} Active Swing Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#444")
 
-    # --- SUBPLOT 2: REPORT MINIMALISTA (LAYOUT FIX) ---
+    # --- SUBPLOT 2: REPORT MINIMALISTA (LAYOUT FIX COMPATTO) ---
     ax_rep = fig.add_subplot(gs[1])
     ax_rep.axis("off")
     
@@ -424,15 +423,15 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     flip_text = f"FLIP STRUTTURALE: {rep['flip_desc']}"
     ax_rep.text(0.02, 0.72, flip_text, fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
     
-    # Riga 3: Key Levels (Migliorata la spaziatura e rimosso MAX GEX)
+    # Riga 3: Key Levels (COMPATTATI A SINISTRA)
     # 1. Resistenza (Sinistra)
     ax_rep.text(0.02, 0.60, f"RESISTENZA CHIAVE: {rep['cw']}", fontsize=10, fontweight='bold', color="#21618C", fontfamily='sans-serif', transform=ax_rep.transAxes)
     
-    # 2. Divisore (Spostato più a destra)
-    ax_rep.text(0.32, 0.60, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
+    # 2. Divisore (Avvicinato molto)
+    ax_rep.text(0.26, 0.60, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
     
-    # 3. Supporto (Spostato più a destra per evitare sovrapposizioni)
-    ax_rep.text(0.34, 0.60, f"SUPPORTO CHIAVE: {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # 3. Supporto (Avvicinato molto)
+    ax_rep.text(0.28, 0.60, f"SUPPORTO CHIAVE: {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
     # --- TIMESTAMP (ALLINEATO A DESTRA) ---
     all_exps = pd.concat([calls["expiry"], puts["expiry"]]).unique()
@@ -441,7 +440,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
     timestamp_text = f"Report prodotto il {now_str}  |  Range Scadenze: {range_str}"
     
-    # FIX: ha='right' ancora il testo al bordo destro (0.98), evitando che sbatta contro il supporto
     ax_rep.text(0.98, 0.60, timestamp_text, fontsize=9, color="#888", fontstyle='italic', fontfamily='sans-serif', ha='right', transform=ax_rep.transAxes)
     # ---------------------------------------------
     
@@ -467,7 +465,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning Pro v20.6 (Swing)")
+st.title("⚡ GEX Positioning Pro v20.7 (Swing)")
 st.markdown("Analisi Strutturale Swing (0-45gg) - Dati Yahoo Filtrati.")
 
 col1, col2 = st.columns([1, 2])
