@@ -540,6 +540,7 @@ with tab2:
             - **< 10 (STABILE):** Mercato tranquillo.
             """)
         else:
-            st.warning("Nessun r
+            st.warning("Nessun risultato.")
+
 
 
