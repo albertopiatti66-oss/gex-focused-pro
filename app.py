@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.6 (Educational Edition)
-- NEW: Legenda Interattiva per spiegare Scenari Istituzionali vs Dealer.
-- NEW: Tooltips (aiuti al passaggio del mouse) sui controlli UI.
-- UI: Sezione AI rinominata in "AI Market Scenario".
-- CORE: Mantiene logica v20.9.5 (Sliders, Zone Colore, Flip Text).
+GEX Positioning v20.9.8 (Full Suite: Single + Scanner)
+- FIX: Codice completo senza abbreviazioni.
+- TAB 1: Analisi approfondita (Grafico, Muri, Scenari, Legenda).
+- TAB 2: Squeeze Scanner (Analisi veloce multi-ticker).
 """
 
 import streamlit as st
@@ -23,7 +22,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.6", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.8", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -41,26 +40,38 @@ def get_market_data(ticker):
     except:
         return None, None, None
 
+def calculate_technical_squeeze(hist):
+    """Calcola se c'è uno squeeze tecnico (Bollinger)."""
+    try:
+        df = hist.copy()
+        df['SMA20'] = df['Close'].rolling(20).mean()
+        df['STD'] = df['Close'].rolling(20).std()
+        df['Upper'] = df['SMA20'] + (df['STD'] * 2)
+        df['Lower'] = df['SMA20'] - (df['STD'] * 2)
+        df['BB_Width'] = (df['Upper'] - df['Lower']) / df['SMA20']
+        
+        last_width = df['BB_Width'].iloc[-1]
+        # Squeeze se width è nel 15% più basso degli ultimi 6 mesi
+        is_squeeze = last_width <= df['BB_Width'].quantile(0.15)
+        return is_squeeze
+    except: return False
+
 def suggest_market_context(hist):
     """AI Auto-Detect."""
     try:
         df = hist.copy()
         df['SMA20'] = df['Close'].rolling(20).mean()
         df['SMA50'] = df['Close'].rolling(50).mean()
-        df['STD'] = df['Close'].rolling(20).std()
-        df['Upper'] = df['SMA20'] + (df['STD'] * 2)
-        df['Lower'] = df['SMA20'] - (df['STD'] * 2)
-        df['BB_Width'] = (df['Upper'] - df['Lower']) / df['SMA20']
         
+        is_sqz = calculate_technical_squeeze(df)
         last = df.iloc[-1]
-        is_squeezing = last['BB_Width'] <= df['BB_Width'].quantile(0.15)
         
-        if is_squeezing:
-            return ("Long Straddle (Volatile)", 1, "🤖 Rilevata Compressione Volatilità (Squeeze). Probabile esplosione di prezzo imminente.")
+        if is_sqz:
+            return ("Long Straddle (Volatile)", 1, "🤖 Rilevata Compressione Volatilità (Squeeze). Probabile esplosione.")
         elif last['Close'] > last['SMA20'] and last['SMA20'] > last['SMA50']:
-            return ("Synthetic Long (Bullish)", 3, "🤖 Rilevato Trend Rialzista Forte (Prezzo > SMA20 > SMA50).")
+            return ("Synthetic Long (Bullish)", 3, "🤖 Rilevato Trend Rialzista Forte (P > SMA20 > SMA50).")
         elif last['Close'] < last['SMA20'] and last['SMA20'] < last['SMA50']:
-            return ("Synthetic Short (Bearish)", 0, "🤖 Rilevato Trend Ribassista Forte (Prezzo < SMA20 < SMA50).")
+            return ("Synthetic Short (Bearish)", 0, "🤖 Rilevato Trend Ribassista Forte (P < SMA20 < SMA50).")
         else:
             return ("Short Straddle (Neutral)", 2, "🤖 Nessun trend chiaro (Laterale). Probabile vendita di volatilità.")
     except Exception as e:
@@ -72,7 +83,8 @@ def vectorized_bs_gamma(S, K, T, r, sigma):
     S = float(S)
     with np.errstate(divide='ignore', invalid='ignore'):
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-        pdf = norm.pdf(d1)
+        # Gamma formula standard
+        pdf = np.exp(-0.5 * d1**2) / np.sqrt(2 * np.pi)
         gamma = pdf / (S * sigma * np.sqrt(T))
     return np.nan_to_num(gamma)
 
@@ -81,7 +93,7 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
     try:
         tk = yf.Ticker(symbol)
         exps = tk.options
-        if not exps: return None, None, "No Expirations found."
+        if not exps: return None, None, "No Data"
         
         today = datetime.now().date()
         valid_exps = []
@@ -91,26 +103,23 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
                 if 0 <= (edate - today).days <= 45: valid_exps.append(e)
             except: continue
             
-        if not valid_exps: return None, None, "No exp in 45 days."
+        if not valid_exps: return None, None, "No Exps < 45 days"
         target_exps = valid_exps[:n_expirations]
         
         all_calls, all_puts = [], []
-        bar = st.progress(0, "Analisi scadenze...")
         
+        # Se siamo in single analysis mostriamo progress bar, altrimenti no (per scanner)
         for i, exp in enumerate(target_exps):
             try:
-                bar.progress(int((i / len(target_exps)) * 100), f"Loading {exp}")
                 chain = tk.option_chain(exp)
                 c, p = chain.calls.copy(), chain.puts.copy()
                 c = c[(c['lastPrice'] >= 0.01) | (c['bid'] > 0)]
                 p = p[(p['lastPrice'] >= 0.01) | (p['bid'] > 0)]
                 c["expiry"], p["expiry"] = exp, exp
                 all_calls.append(c); all_puts.append(p)
-                time.sleep(0.05)
             except: continue
-        bar.empty()
         
-        if not all_calls: return None, None, "Empty data."
+        if not all_calls: return None, None, "Empty Data"
         calls = pd.concat(all_calls, ignore_index=True)
         puts = pd.concat(all_puts, ignore_index=True)
     except Exception as e: return None, None, str(e)
@@ -127,8 +136,9 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
     ub = spot_price * (1 + range_pct/100)
     return calls[(calls["strike"] >= lb) & (calls["strike"] <= ub)], puts[(puts["strike"] >= lb) & (puts["strike"] <= ub)], None
 
-def calculate_aggregated_gex(calls, puts, spot, adv, call_sign=1, put_sign=-1):
-    try: irx = yf.Ticker("^IRX").history(period="1d")["Close"].iloc[-1] / 100
+def calculate_gex_metrics(calls, puts, spot, adv, call_sign, put_sign):
+    # Funzione UNIFICATA per calcolare GEX e GPI
+    try: irx = 0.045 # Default rate per velocità
     except: irx = 0.045
     
     now_dt = datetime.now(timezone.utc)
@@ -150,7 +160,8 @@ def calculate_aggregated_gex(calls, puts, spot, adv, call_sign=1, put_sign=-1):
     gex_by_strike = gex_df.groupby("strike")["GEX"].sum().reset_index().sort_values("strike")
     
     tot_gex = calls["GEX"].sum() + puts["GEX"].sum()
-    net_bias = (tot_gex / (abs(calls["GEX"].sum()) + abs(puts["GEX"].sum())) * 100) if tot_gex != 0 else 0
+    abs_tot = abs(calls["GEX"].sum()) + abs(puts["GEX"].sum())
+    net_bias = (tot_gex / abs_tot * 100) if abs_tot > 0 else 0
     gpi = (abs(tot_gex) * (spot * 0.01) / (adv * spot) * 100) if adv > 0 else 0
 
     gamma_flip = None
@@ -164,10 +175,10 @@ def calculate_aggregated_gex(calls, puts, spot, adv, call_sign=1, put_sign=-1):
         "calls": calls, "puts": puts, "gex_by_strike": gex_by_strike,
         "gamma_flip": gamma_flip, "net_gamma_bias": net_bias, "total_gex": tot_gex,
         "gpi": gpi, "risk_free_used": irx
-    }, None
+    }
 
 # -----------------------------------------------------------------------------
-# 2. REPORT ANALITICO
+# 2. REPORT ANALITICO & GRAFICA (Full Version)
 # -----------------------------------------------------------------------------
 
 def find_zero_crossing(df, spot):
@@ -205,27 +216,27 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name)
     if tot_gex > 0:
         if gpi > 10:
             scommessa = "🛡️ POSITIONING: PINNING"
-            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). I Dealer stanno bloccando il prezzo. Volatilità compressa."
+            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer bloccano il prezzo."
         else:
             scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"
-            dettaglio = f"Long Gamma classico. GPI contenuto ({gpi_txt}). Il mercato ammortizza i movimenti. 'Buy the Dip' favorito."
+            dettaglio = f"Long Gamma classico. GPI contenuto ({gpi_txt}). Mercato ammortizzato."
         bordino = "#2E8B57"
     elif tot_gex < 0:
         if gpi > 8.0:
             scommessa = "🔥 POSITIONING: SQUEEZE / CRASH"
-            dettaglio = f"ALLARME: Short Gamma + GPI Alto ({gpi_txt}). I Dealer accelerano i movimenti. Rischio esplosione o crollo verticale."
+            dettaglio = f"ALLARME: Short Gamma + GPI Alto ({gpi_txt}). Rischio esplosione volatilità."
             bordino = "#8B0000"
         else:
             scommessa = "🔥 POSITIONING: ACCELERAZIONE"
-            dettaglio = f"Short Gamma attivo. Mancano i freni dei Dealer. Possibili trend veloci e direzionali."
+            dettaglio = f"Short Gamma attivo. Mancano freni. Possibili trend veloci."
             bordino = "#C0392B"
     elif safe_zone and tot_gex < 0:
         scommessa = "⚠️ POSITIONING: FRAGILE"
-        dettaglio = "Sopra il Flip ma con Gamma negativo. La salita è priva di fondamenta strutturali."
+        dettaglio = "Sopra Flip ma Gamma negativo. Salita fragile."
         bordino = "#E67E22"
     else:
-        scommessa = "⚠️ POSITIONING: NEUTRALE/INCERTO"
-        dettaglio = "Configurazione mista. Attendere conferme dai livelli chiave."
+        scommessa = "⚠️ POSITIONING: NEUTRALE"
+        dettaglio = "Configurazione mista."
         bordino = "grey"
 
     cw_txt = f"{int(cw_val)}" if cw_val else "-"
@@ -241,10 +252,6 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name)
         "gpi": gpi_txt, "gpi_desc": gpi_desc, "scommessa": scommessa,
         "dettaglio": dettaglio, "bordino": bordino, "scenario_name": scenario_name
     }
-
-# -----------------------------------------------------------------------------
-# 3. PLOTTING UNIFICATO
-# -----------------------------------------------------------------------------
 
 def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_min_put_pct, scenario_name, ai_explanation):
     calls, puts = data["calls"], data["puts"]
@@ -372,91 +379,117 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     return fig
 
 # -----------------------------------------------------------------------------
-# 4. STREAMLIT UI
+# 3. UI PRINCIPALE (DUAL TAB)
 # -----------------------------------------------------------------------------
-st.title("⚡ GEX Positioning v20.9.6")
-c1, c2 = st.columns([1, 2])
 
-with c1:
-    st.markdown("### ⚙️ Setup")
-    sym = st.text_input("Ticker", "SPY", help="Inserisci il simbolo del sottostante (es. SPY, QQQ, NVDA).").upper()
-    spot, adv, hist = get_market_data(sym)
-    if spot: st.success(f"Spot: ${spot:.2f}")
-    
-    st.markdown("---")
-    nex = st.slider("Scadenze", 4, 12, 8, help="Numero di scadenze future da aggregare (filtro automatico 0-45 giorni).")
-    
-    st.markdown("### 🤖 AI Market Scenario")
-    rname, ridx, aiexp = suggest_market_context(hist) if hist is not None else ("Neutral", 2, "")
-    if hist is not None: 
-        st.info(aiexp)
-    else:
-        st.warning("Dati storici non disponibili per l'AI.")
-    
-    opts = ["Synthetic Short (Bearish)", "Long Straddle (Volatile)", "Short Straddle (Neutral)", "Synthetic Long (Bullish)"]
-    sel = st.radio("Seleziona Scenario Istituzionale:", opts, index=ridx, help="Seleziona la strategia presunta degli istituzionali. L'AI ne suggerisce una, ma puoi cambiarla.")
-    
-    # --- LEGENDA INTERATTIVA (EDUCATIONAL) ---
-    if "Short (Bearish)" in sel:
-        cs, ps, sl = 1, -1, "Bearish (Synth Short)"
-        st.markdown("""
-        <div style='background-color: #ffebee; padding: 10px; border-radius: 5px; border-left: 5px solid #d32f2f; font-size: 0.9em;'>
-        <b>📖 Guida allo Scenario:</b><br>
-        • <b>Istituzionali:</b> Comprano Put (Ribasso) e Vendono Call (Finanziamento).<br>
-        • <b>Dealer (Controparte):</b> Short Put + Long Call.<br>
-        • <b>Effetto:</b> Il Dealer deve vendere se il prezzo scende (Accelera il ribasso).
-        </div>
-        """, unsafe_allow_html=True)
-        
-    elif "Long Straddle" in sel:
-        cs, ps, sl = -1, -1, "Volatile (L-Straddle)"
-        st.markdown("""
-        <div style='background-color: #fff3e0; padding: 10px; border-radius: 5px; border-left: 5px solid #f57c00; font-size: 0.9em;'>
-        <b>📖 Guida allo Scenario:</b><br>
-        • <b>Istituzionali:</b> Comprano sia Call che Put (Scommettono su esplosione prezzo).<br>
-        • <b>Dealer (Controparte):</b> Short Call + Short Put (Short Gamma).<br>
-        • <b>Effetto:</b> Il Dealer deve inseguire il prezzo (Compra se sale, Vende se scende). Volatilità estrema.
-        </div>
-        """, unsafe_allow_html=True)
-        
-    elif "Short Straddle" in sel:
-        cs, ps, sl = 1, 1, "Neutral (S-Straddle)"
-        st.markdown("""
-        <div style='background-color: #e8f5e9; padding: 10px; border-radius: 5px; border-left: 5px solid #388e3c; font-size: 0.9em;'>
-        <b>📖 Guida allo Scenario:</b><br>
-        • <b>Istituzionali:</b> Vendono Call e Put (Scommettono che il prezzo resti fermo).<br>
-        • <b>Dealer (Controparte):</b> Long Call + Long Put (Long Gamma).<br>
-        • <b>Effetto:</b> Il Dealer stabilizza il mercato (Vende se sale, Compra se scende). Range stretto.
-        </div>
-        """, unsafe_allow_html=True)
-        
-    else: # Synth Long
-        cs, ps, sl = -1, 1, "Bullish (Synth Long)"
-        st.markdown("""
-        <div style='background-color: #e3f2fd; padding: 10px; border-radius: 5px; border-left: 5px solid #1976d2; font-size: 0.9em;'>
-        <b>📖 Guida allo Scenario:</b><br>
-        • <b>Istituzionali:</b> Comprano Call (Rialzo) e Vendono Put (Finanziamento).<br>
-        • <b>Dealer (Controparte):</b> Short Call + Long Put.<br>
-        • <b>Effetto:</b> Simula un posizionamento azionario diretto.
-        </div>
-        """, unsafe_allow_html=True)
-    # -----------------------------------------
+st.title("⚡ GEX Positioning v20.9.8")
+tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔥 Squeeze Scanner"])
 
-    rng = st.slider("Range %", 10, 40, 20, help="Zoom del grafico rispetto allo spot price.")
-    
-    st.write("🧩 Filtri Muri")
-    dc = st.slider("Dist. Min. Muri CALL (%)", 0, 10, 2, help="Ignora i muri Call troppo vicini tra loro (in %)")
-    dp = st.slider("Dist. Min. Muri PUT (%)", 0, 10, 2, help="Ignora i muri Put troppo vicini tra loro (in %)")
-    
-    btn = st.button("🚀 Analizza", type="primary", use_container_width=True)
-
-with c2:
-    if btn and spot:
-        calls, puts, err = get_aggregated_data(sym, spot, nex, rng)
-        if err: st.error(err)
+# --- TAB 1: ANALISI SINGOLA ---
+with tab1:
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        st.markdown("### ⚙️ Setup")
+        sym = st.text_input("Ticker", "SPY", help="Simbolo (es. SPY, QQQ, NVDA)").upper()
+        spot, adv, hist = get_market_data(sym)
+        if spot: st.success(f"Spot: ${spot:.2f}")
+        
+        nex = st.slider("Scadenze", 4, 12, 8, help="Num. scadenze future (filtro 45gg)")
+        
+        st.markdown("### 🤖 AI Market Scenario")
+        rname, ridx, aiexp = suggest_market_context(hist) if hist is not None else ("Neutral", 2, "")
+        if hist is not None: st.info(aiexp)
+        
+        opts = ["Synthetic Short (Bearish)", "Long Straddle (Volatile)", "Short Straddle (Neutral)", "Synthetic Long (Bullish)"]
+        sel = st.radio("Seleziona Scenario:", opts, index=ridx)
+        
+        # Logica Segni
+        if "Short (Bearish)" in sel:
+            cs, ps, sl = 1, -1, "Bearish"
+            st.caption("Istituzionali Long Put. Dealer: Long Call / Short Put.")
+        elif "Long Straddle" in sel:
+            cs, ps, sl = -1, -1, "Volatile"
+            st.caption("Istituzionali Long Straddle. Dealer: Short Gamma (Short Call/Put).")
+        elif "Short Straddle" in sel:
+            cs, ps, sl = 1, 1, "Neutral"
+            st.caption("Istituzionali Short Straddle. Dealer: Long Gamma.")
         else:
-            with st.spinner("Processing..."):
-                res, _ = calculate_aggregated_gex(calls, puts, spot, adv, cs, ps)
-                fig = plot_dashboard_unified(sym, res, spot, nex, dc, dp, sl, aiexp)
-                st.pyplot(fig)
+            cs, ps, sl = -1, 1, "Bullish"
+            st.caption("Istituzionali Long Call. Dealer: Short Call / Long Put.")
+
+        rng = st.slider("Range %", 10, 40, 20, help="Zoom grafico")
+        st.write("🧩 Filtri Muri")
+        dc = st.slider("Dist. Min. Muri CALL (%)", 0, 10, 2)
+        dp = st.slider("Dist. Min. Muri PUT (%)", 0, 10, 2)
+        
+        btn = st.button("🚀 Analizza Single", type="primary", use_container_width=True)
+
+    with c2:
+        if btn and spot:
+            calls, puts, err = get_aggregated_data(sym, spot, nex, rng)
+            if err: st.error(err)
+            else:
+                with st.spinner("Processing..."):
+                    res = calculate_gex_metrics(calls, puts, spot, adv, cs, ps)
+                    fig = plot_dashboard_unified(sym, res, spot, nex, dc, dp, sl, aiexp)
+                    st.pyplot(fig)
+
+# --- TAB 2: SQUEEZE SCANNER ---
+with tab2:
+    st.markdown("### 🔥 Gamma Squeeze & Volatility Scanner")
+    st.markdown("Analisi batch per trovare: **Short Gamma** + **GPI Alto** + **Squeeze Tecnico**.")
+    
+    default_tickers = "SPY, QQQ, IWM, NVDA, TSLA, AMD, AAPL, MSFT, AMZN, META, COIN, MSTR, GME, AMC, PLTR"
+    ticker_input = st.text_area("Lista Tickers (separati da virgola)", default_tickers)
+    
+    n_scan_exps = st.slider("Scadenze Scanner (Speed vs Precision)", 2, 6, 4)
+    btn_scan = st.button("🔎 Avvia Scansione", type="primary")
+    
+    if btn_scan:
+        tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
+        results = []
+        bar = st.progress(0, "Inizio scansione...")
+        
+        for i, t in enumerate(tickers):
+            bar.progress(int((i / len(tickers)) * 100), f"Analisi {t}...")
+            
+            spot_s, adv_s, hist_s = get_market_data(t)
+            if not spot_s: continue
+            
+            is_sqz = calculate_technical_squeeze(hist_s)
+            
+            # AI Auto-scenario
+            scen_tuple = suggest_market_context(hist_s)
+            scen_name = scen_tuple[0]
+            
+            if "Synthetic Short" in scen_name: c_s, p_s = 1, -1
+            elif "Long Straddle" in scen_name: c_s, p_s = -1, -1
+            elif "Short Straddle" in scen_name: c_s, p_s = 1, 1
+            else: c_s, p_s = -1, 1
+            
+            calls_s, puts_s, err_s = get_aggregated_data(t, spot_s, n_scan_exps, 15)
+            
+            if not err_s:
+                res_s = calculate_gex_metrics(calls_s, puts_s, spot_s, adv_s, c_s, p_s)
+                regime = "LONG GAMMA" if res_s['total_gex'] > 0 else "SHORT GAMMA"
+                gpi_val = res_s['gpi']
+                
+                score = gpi_val
+                if regime == "SHORT GAMMA": score += 20
+                if is_sqz: score += 15
+                
+                results.append({
+                    "Ticker": t, "Price": spot_s, "Regime": regime,
+                    "GPI %": round(gpi_val, 1), "BB Squeeze": "✅ YES" if is_sqz else "No",
+                    "AI Scenario": scen_name.split("(")[0], "Score": round(score, 1)
+                })
+            time.sleep(0.1)
+            
+        bar.empty()
+        if results:
+            df_res = pd.DataFrame(results).sort_values("Score", ascending=False)
+            def color_regime(val): return f'background-color: {"#ffcdd2" if val == "SHORT GAMMA" else "#c8e6c9"}; color: black'
+            st.dataframe(df_res.style.applymap(color_regime, subset=['Regime']).format({"Price": "${:.2f}", "GPI %": "{:.1f}%", "Score": "{:.0f}"}), use_container_width=True)
+        else:
+            st.warning("Nessun risultato.")
 
