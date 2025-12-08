@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.12 (Ultimate Edition)
-- FEATURES MERGED:
-  1. AI Smart Trend (Gestisce Rimbalzi/Pullback e non solo trend puri).
-  2. Scanner Parlante (Score numerico + Commento "ESPLOSIVO").
-  3. Legenda Educativa & Tooltips.
+GEX Positioning v20.9.13 (Polished Edition)
+- FIX: Ripristinato bottone Download PNG.
+- UI: Linea Gamma Flip ora è ROSSO VIVO (#FF0000).
+- FEATURES: AI Smart Trend + Scanner Parlante inclusi.
 """
 
 import streamlit as st
@@ -23,7 +22,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.12", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.13", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -127,7 +126,7 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         if not valid_exps: return None, None, "No Exps < 45 days"
         target_exps = valid_exps[:n_expirations]
         
-        all_calls, all_puts = [], []
+        all_calls, all_puts = []
         
         for i, exp in enumerate(target_exps):
             try:
@@ -335,7 +334,10 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax2.plot(gex_clean["strike"], gex_clean["GEX"], color='#999999', ls=':', lw=2, label="Net GEX", zorder=5)
     
     ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot", zorder=6)
-    if final_flip: ax.axvline(final_flip, color="#7F8C8D", ls="-.", lw=1.2, label="Flip", zorder=6)
+    
+    # --- RED FLIP LINE FIX ---
+    if final_flip: 
+        ax.axvline(final_flip, color="#FF0000", ls="-.", lw=1.5, label="Flip", zorder=6)
     
     max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100
     yo = max_y * 0.03
@@ -353,8 +355,15 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax.set_ylabel("OI", fontsize=10, fontweight='bold', color="#777"); ax2.set_ylabel("GEX", fontsize=10, color="#777")
     ax2.axhline(0, color="#BDC3C7", lw=0.5, ls='-')
     
-    legs = [Patch(facecolor='#4682B4', alpha=0.5, label='Call OI'), Patch(facecolor='#DEB887', alpha=0.5, label='Put OI'), Line2D([0],[0], color='#2980B9', ls='--', label='Spot'), Line2D([0],[0], color='#999999', ls=':', label='GEX')]
-    if final_flip: legs.append(Line2D([0],[0], color='#7F8C8D', ls='-.', label='Flip'))
+    # Update Legend
+    legs = [
+        Patch(facecolor='#4682B4', alpha=0.5, label='Call OI'), 
+        Patch(facecolor='#DEB887', alpha=0.5, label='Put OI'), 
+        Line2D([0],[0], color='#2980B9', ls='--', label='Spot'), 
+        Line2D([0],[0], color='#999999', ls=':', label='GEX')
+    ]
+    if final_flip: legs.append(Line2D([0],[0], color='#FF0000', ls='-.', label='Flip')) # Red Legend
+    
     ax.legend(handles=legs, loc='upper left', fontsize=9)
     ax.set_title(f"{symbol} GEX & GPI (Next {n_exps} Exps)", fontsize=13, fontweight='bold', color="#444")
 
@@ -401,7 +410,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 3. UI PRINCIPALE (DUAL TAB)
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.12")
+st.title("⚡ GEX Positioning v20.9.13")
 tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -452,6 +461,11 @@ with tab1:
                     res = calculate_gex_metrics(calls, puts, spot, adv, cs, ps)
                     fig = plot_dashboard_unified(sym, res, spot, nex, dc, dp, sl, aiexp)
                     st.pyplot(fig)
+                    
+                    # --- DOWNLOAD BUTTON RIPRISTINATO ---
+                    buf = BytesIO()
+                    fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
+                    st.download_button("💾 Scarica Grafico", buf.getvalue(), f"GEX_{sym}.png", "image/png", use_container_width=True)
 
 # --- TAB 2: SQUEEZE SCANNER ---
 with tab2:
