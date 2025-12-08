@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.1 (GPI & Institutional Scenarios)
-- LOGIC UPDATE: Selezione Scenario Istituzionale con inversione automatica lato Dealer.
-- NEW: Il report mostra lo scenario selezionato.
+GEX Positioning v20.9.2 (GPI & Institutional Scenarios - Layout Fix)
+- FIX: Risolto problema sovrapposizione testo nel report grafico.
+- LOGIC: Invariata rispetto alla v20.9.1.
 """
 
 import streamlit as st
@@ -21,7 +21,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.1", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.2", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -246,10 +246,10 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name)
     if effective_flip is not None:
         if spot > effective_flip:
             safe_zone = True
-            flip_desc = f"Spot SOPRA il Flip ({effective_flip:.0f})"
+            flip_desc = f"Spot SOPRA Flip ({effective_flip:.0f})"
         else:
             safe_zone = False
-            flip_desc = f"Spot SOTTO il Flip ({effective_flip:.0f})"
+            flip_desc = f"Spot SOTTO Flip ({effective_flip:.0f})"
     else:
         flip_desc = "Flip indefinito"
 
@@ -261,7 +261,7 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name)
     if tot_gex > 0:
         if gpi > 10:
             scommessa = "🛡️ POSITIONING: PINNING (Prezzo Bloccato)"
-            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer dominanti. Scenario '{scenario_name}' suggerisce che gli istituzionali sono posizionati per bassa volatilità o rialzo stabile."
+            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer dominanti. Scenario '{scenario_name}' suggerisce bassa volatilità o rialzo stabile."
         else:
             scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"
             dettaglio = f"Regime Long Gamma classico. GPI contenuto ({gpi_txt}). Il mercato assorbe gli shock. Scenario '{scenario_name}' attivo."
@@ -430,44 +430,41 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=9, edgecolor="#EEEEEE")
     ax.set_title(f"{symbol} GEX & GPI PROFILE (Next {n_exps} Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#444")
 
-    # --- SUBPLOT 2: REPORT CON GPI & SCENARIO ---
+    # --- SUBPLOT 2: REPORT CON GPI & SCENARIO (LAYOUT FIX) ---
     ax_rep = fig.add_subplot(gs[1])
     ax_rep.axis("off")
     
-    # Riga 1: Spot / Regime
-    ax_rep.text(0.02, 0.88, f"SPOT: {rep['spot']:.2f}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(0.20, 0.88, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
-    ax_rep.text(0.22, 0.88, f"REGIME: ", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(0.33, 0.88, rep['regime'], fontsize=11, fontweight='bold', color=rep['regime_color'], fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(0.55, 0.88, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
+    # RIGA 1 (y=0.90): Spot | Regime | Bias (Spreadout)
+    ax_rep.text(0.02, 0.90, f"SPOT: {rep['spot']:.2f}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.20, 0.90, "|", fontsize=11, color="#BDC3C7", transform=ax_rep.transAxes)
+    ax_rep.text(0.22, 0.90, f"REGIME: ", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.33, 0.90, rep['regime'], fontsize=11, fontweight='bold', color=rep['regime_color'], fontfamily='sans-serif', transform=ax_rep.transAxes)
     
-    # Riga 1 (Destra): Bias
-    ax_rep.text(0.57, 0.88, f"BIAS: {rep['bias']}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # Bias spostato più a destra
+    ax_rep.text(0.65, 0.90, f"BIAS: {rep['bias']}", fontsize=11, fontweight='bold', color="#333", fontfamily='sans-serif', transform=ax_rep.transAxes)
 
-    # Riga 2: Flip e Key Levels
-    ax_rep.text(0.02, 0.72, f"FLIP: {rep['flip_desc']}", fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    # RIGA 2 (y=0.78): Flip | Res | Sup
+    ax_rep.text(0.02, 0.78, f"FLIP: {rep['flip_desc']}", fontsize=10, color="#555", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.35, 0.78, f"RES: {rep['cw']}", fontsize=10, fontweight='bold', color="#21618C", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(0.50, 0.78, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
+    ax_rep.text(0.52, 0.78, f"SUP: {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
     
-    ax_rep.text(0.02, 0.60, f"RES: {rep['cw']}", fontsize=10, fontweight='bold', color="#21618C", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    ax_rep.text(0.18, 0.60, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
-    ax_rep.text(0.20, 0.60, f"SUP: {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
-    
-    # GPI INDICATOR
+    # RIGA 3 (y=0.66): SCENARIO (Dedicata)
+    ax_rep.text(0.02, 0.66, f"SCENARIO IST.:", fontsize=10, color="#555", transform=ax_rep.transAxes)
+    ax_rep.text(0.18, 0.66, f"{rep['scenario_name']}", fontsize=10, fontweight='bold', color="#2C3E50", transform=ax_rep.transAxes)
+
+    # RIGA 4 (y=0.54): GPI e Timestamp
     gpi_color = "#333"
     if "ALTO" in rep['gpi_desc'] or "ESTREMO" in rep['gpi_desc']: gpi_color = "#C0392B"
-    ax_rep.text(0.70, 0.72, "GPI (Pressure Index):", fontsize=10, color="#555", transform=ax_rep.transAxes)
-    ax_rep.text(0.86, 0.72, f"{rep['gpi']} ({rep['gpi_desc']})", fontsize=10, fontweight='bold', color=gpi_color, transform=ax_rep.transAxes)
+    ax_rep.text(0.02, 0.54, "GPI (Pressure Index):", fontsize=10, color="#555", transform=ax_rep.transAxes)
+    ax_rep.text(0.18, 0.54, f"{rep['gpi']} ({rep['gpi_desc']})", fontsize=10, fontweight='bold', color=gpi_color, transform=ax_rep.transAxes)
 
-    # NUOVO: MOSTRA SCENARIO SCELTO
-    ax_rep.text(0.70, 0.88, f"SCENARIO IST.:", fontsize=10, color="#555", transform=ax_rep.transAxes)
-    ax_rep.text(0.86, 0.88, f"{rep['scenario_name']}", fontsize=9, fontweight='bold', color="#2C3E50", transform=ax_rep.transAxes)
-
-    # Timestamp
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-    ax_rep.text(0.98, 0.60, f"Report: {now_str}", fontsize=9, color="#888", fontstyle='italic', fontfamily='sans-serif', ha='right', transform=ax_rep.transAxes)
+    ax_rep.text(0.98, 0.54, f"Report: {now_str}", fontsize=9, color="#888", fontstyle='italic', fontfamily='sans-serif', ha='right', transform=ax_rep.transAxes)
     
-    # Box Commento
-    box_x, box_y = 0.02, 0.05
-    box_w, box_h = 0.96, 0.45
+    # Box Commento (Regolato in basso)
+    box_x, box_y = 0.02, 0.02
+    box_w, box_h = 0.96, 0.48 # Altezza leggermente ridotta
     rect = patches.FancyBboxPatch((box_x, box_y), box_w, box_h, boxstyle="round,pad=0.03", linewidth=0.8, edgecolor="#DDDDDD", facecolor="#FFFFFF", transform=ax_rep.transAxes, zorder=1)
     ax_rep.add_patch(rect)
     
@@ -475,9 +472,9 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax_rep.add_patch(accent_rect)
     
     sintesi_title = rep['scommessa']
-    sintesi_desc = textwrap.fill(rep['dettaglio'], width=115)
+    sintesi_desc = textwrap.fill(rep['dettaglio'], width=110) # Reduced width to prevent bleed
     
-    ax_rep.text(box_x + 0.035, box_y + 0.35, sintesi_title, fontsize=13, fontweight='bold', color="#2C3E50", fontfamily='sans-serif', transform=ax_rep.transAxes)
+    ax_rep.text(box_x + 0.035, box_y + 0.36, sintesi_title, fontsize=13, fontweight='bold', color="#2C3E50", fontfamily='sans-serif', transform=ax_rep.transAxes)
     ax_rep.text(box_x + 0.035, box_y + 0.28, sintesi_desc, fontsize=10, color="#444", fontfamily='sans-serif', va='top', transform=ax_rep.transAxes)
 
     plt.tight_layout()
@@ -487,7 +484,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.1 (GPI Edition)")
+st.title("⚡ GEX Positioning v20.9.2 (GPI Edition)")
 st.markdown("Analisi Strutturale con **Scenario Istituzionale** e **GPI**.")
 
 col1, col2 = st.columns([1, 2])
@@ -511,13 +508,6 @@ with col1:
     st.markdown("### 🏦 Posizionamento Istituzionale")
     st.caption("Seleziona cosa stanno facendo gli istituzionali. Il sistema calcolerà automaticamente il GEX della controparte (Dealer).")
     
-    # Mappa Scenari: (Nome Utente) -> (Call Sign Dealer, Put Sign Dealer, Label Breve)
-    # Logica Inversa:
-    # 1. Inst: Long Put + Short Call (Bear) -> Dealer: Short Put + Long Call -> Signs: Call=+1, Put=-1
-    # 2. Inst: Long Put + Long Call (Vol)  -> Dealer: Short Put + Short Call -> Signs: Call=-1, Put=-1
-    # 3. Inst: Short Put + Short Call (Neutral) -> Dealer: Long Put + Long Call -> Signs: Call=+1, Put=+1
-    # 4. Inst: Short Put + Long Call (Bull) -> Dealer: Long Put + Short Call -> Signs: Call=-1, Put=+1
-
     scenario_options = [
         "Synthetic Short (Bearish) [L-Put / S-Call]",
         "Long Straddle (Volatile) [L-Put / L-Call]",
