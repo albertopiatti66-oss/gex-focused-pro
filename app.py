@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.9 (Scanner Readable Edition)
-- UPDATE: Scanner mostra etichette semplici (Bullish/Bearish/Neutral) invece di nomi tecnici.
-- LOGIC: Score Algorithm = GPI + ShortGammaBonus(20) + TechSqueezeBonus(15).
+GEX Positioning v20.9.10 (Smart Score Edition)
+- UPDATE: La colonna "Score" ora contiene il commento testuale (es. "45.0 | ⚡ ESPLOSIVO").
+- LOGIC: Ordina per gravità numerica e poi formatta il testo per la leggibilità.
 """
 
 import streamlit as st
@@ -21,7 +21,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.9", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.10", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -378,7 +378,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 3. UI PRINCIPALE (DUAL TAB)
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.8")
+st.title("⚡ GEX Positioning v20.9.10")
 tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -458,7 +458,6 @@ with tab2:
             scen_tuple = suggest_market_context(hist_s)
             scen_name = scen_tuple[0]
             
-            # Update labels readable
             if "Synthetic Short" in scen_name: 
                 c_s, p_s = 1, -1
                 readable_scen = "BEARISH 🐻"
@@ -479,6 +478,7 @@ with tab2:
                 regime = "LONG GAMMA" if res_s['total_gex'] > 0 else "SHORT GAMMA"
                 gpi_val = res_s['gpi']
                 
+                # Calcolo Score
                 score = gpi_val
                 if regime == "SHORT GAMMA": score += 20
                 if is_sqz: score += 15
@@ -486,22 +486,38 @@ with tab2:
                 results.append({
                     "Ticker": t, "Price": spot_s, "Regime": regime,
                     "GPI %": round(gpi_val, 1), "BB Squeeze": "✅ YES" if is_sqz else "No",
-                    "AI Scenario": readable_scen, "Score": round(score, 1)
+                    "AI Scenario": readable_scen, "ScoreVal": score # Per sorting
                 })
             time.sleep(0.1)
             
         bar.empty()
         if results:
-            df_res = pd.DataFrame(results).sort_values("Score", ascending=False)
+            df_res = pd.DataFrame(results).sort_values("ScoreVal", ascending=False)
+            
+            # Funzione per formattare lo score in modo "parlante"
+            def format_score_col(val):
+                if val > 40: return f"{val:.1f} | ⚡ ESPLOSIVO"
+                if val > 25: return f"{val:.1f} | 🔥 ALTO"
+                if val > 10: return f"{val:.1f} | ⚠️ MEDIO"
+                return f"{val:.1f} | ✅ STABILE"
+            
+            df_res["Score"] = df_res["ScoreVal"].apply(format_score_col)
+            # Rimuoviamo la colonna di appoggio usata per il sort
+            df_display = df_res.drop(columns=["ScoreVal"])
+            
             def color_regime(val): return f'background-color: {"#ffcdd2" if val == "SHORT GAMMA" else "#c8e6c9"}; color: black'
-            st.dataframe(df_res.style.applymap(color_regime, subset=['Regime']).format({"Price": "${:.2f}", "GPI %": "{:.1f}%", "Score": "{:.0f}"}), use_container_width=True)
+            
+            st.dataframe(
+                df_display.style.applymap(color_regime, subset=['Regime'])
+                                .format({"Price": "${:.2f}", "GPI %": "{:.1f}%"}), 
+                use_container_width=True
+            )
             
             st.markdown("""
             **Legenda Score:**
-            - **Score:** Indice di Instabilità (GPI + Bonus Short Gamma + Bonus Squeeze).
-            - **> 40:** Zona Pericolosa (Esplosione Probabile).
-            - **20-40:** Attenzione Alta.
-            - **< 10:** Stabile.
+            - **> 40 (ESPLOSIVO):** Short Gamma + Pressione Volumetrica Alta + Squeeze.
+            - **25 - 40 (ALTO):** Situazione instabile.
+            - **< 10 (STABILE):** Mercato tranquillo.
             """)
         else:
             st.warning("Nessun risultato.")
