@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.10 (Smart Score Edition)
-- UPDATE: La colonna "Score" ora contiene il commento testuale (es. "45.0 | ⚡ ESPLOSIVO").
-- LOGIC: Ordina per gravità numerica e poi formatta il testo per la leggibilità.
+GEX Positioning v20.9.12 (Ultimate Edition)
+- FEATURES MERGED:
+  1. AI Smart Trend (Gestisce Rimbalzi/Pullback e non solo trend puri).
+  2. Scanner Parlante (Score numerico + Commento "ESPLOSIVO").
+  3. Legenda Educativa & Tooltips.
 """
 
 import streamlit as st
@@ -21,7 +23,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.10", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.12", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -56,7 +58,9 @@ def calculate_technical_squeeze(hist):
     except: return False
 
 def suggest_market_context(hist):
-    """AI Auto-Detect."""
+    """
+    AI Auto-Detect EVOLUTA (Include Tactical Reversal & Pullback).
+    """
     try:
         df = hist.copy()
         df['SMA20'] = df['Close'].rolling(20).mean()
@@ -64,15 +68,34 @@ def suggest_market_context(hist):
         
         is_sqz = calculate_technical_squeeze(df)
         last = df.iloc[-1]
+        price = last['Close']
+        sma20 = last['SMA20']
+        sma50 = last['SMA50']
         
+        # 1. VOLATILITY SQUEEZE (Priorità Max)
         if is_sqz:
-            return ("Long Straddle (Volatile)", 1, "🤖 Rilevata Compressione Volatilità (Squeeze). Probabile esplosione.")
-        elif last['Close'] > last['SMA20'] and last['SMA20'] > last['SMA50']:
-            return ("Synthetic Long (Bullish)", 3, "🤖 Rilevato Trend Rialzista Forte (P > SMA20 > SMA50).")
-        elif last['Close'] < last['SMA20'] and last['SMA20'] < last['SMA50']:
-            return ("Synthetic Short (Bearish)", 0, "🤖 Rilevato Trend Ribassista Forte (P < SMA20 < SMA50).")
+            return ("Long Straddle (Volatile)", 1, "🤖 SQUEEZE: Volatilità compressa. Istituzionali comprano gamma in attesa di esplosione.")
+
+        # 2. STRONG UPTREND (Tutto allineato)
+        if price > sma20 and sma20 > sma50:
+             return ("Synthetic Long (Bullish)", 3, "🤖 STRONG UPTREND: Prezzo sopra medie allineate. Istituzionali Long.")
+
+        # 3. STRONG DOWNTREND (Tutto allineato)
+        elif price < sma20 and sma20 < sma50:
+             return ("Synthetic Short (Bearish)", 0, "🤖 STRONG DOWNTREND: Prezzo sotto medie allineate. Istituzionali Short.")
+             
+        # 4. TACTICAL REVERSAL (Rimbalzo: Prezzo recupera la 20 ma trend fondo è short)
+        elif price > sma20 and sma20 < sma50:
+            return ("Synthetic Long (Bullish)", 3, "🤖 TACTICAL REVERSAL: Prezzo recupera la SMA20. Istituzionali comprano il rimbalzo (Tactical Long).")
+
+        # 5. CORRECTION / PULLBACK (Prezzo perde la 20 ma trend fondo è long)
+        elif price < sma20 and sma20 > sma50:
+            return ("Synthetic Short (Bearish)", 0, "🤖 WEAKNESS/PULLBACK: Prezzo perde la SMA20. Istituzionali coprono o vanno Short breve termine.")
+
+        # 6. NEUTRAL (Solo se prezzo è esattamente sulla media o in squeeze non rilevato)
         else:
-            return ("Short Straddle (Neutral)", 2, "🤖 Nessun trend chiaro (Laterale). Probabile vendita di volatilità.")
+            return ("Short Straddle (Neutral)", 2, "🤖 CHOPPY: Nessuna direzione chiara. Vendita volatilità.")
+
     except Exception as e:
         return "Short Straddle (Neutral)", 2, f"AI Error: {e}"
 
@@ -378,7 +401,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 3. UI PRINCIPALE (DUAL TAB)
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.10")
+st.title("⚡ GEX Positioning v20.9.12")
 tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -402,16 +425,16 @@ with tab1:
         # Logica Segni
         if "Short (Bearish)" in sel:
             cs, ps, sl = 1, -1, "Bearish"
-            st.caption("Istituzionali Long Put. Dealer: Long Call / Short Put.")
+            st.markdown("""<div style='background-color:#ffebee;padding:8px;border-left:4px solid #d32f2f'><b>🐻 BEARISH:</b> Ist. Long Put. Dealer: Long Call / Short Put.</div>""", unsafe_allow_html=True)
         elif "Long Straddle" in sel:
             cs, ps, sl = -1, -1, "Volatile"
-            st.caption("Istituzionali Long Straddle. Dealer: Short Gamma (Short Call/Put).")
+            st.markdown("""<div style='background-color:#fff3e0;padding:8px;border-left:4px solid #f57c00'><b>💥 VOLATILE:</b> Ist. Long Straddle. Dealer: Short Gamma.</div>""", unsafe_allow_html=True)
         elif "Short Straddle" in sel:
             cs, ps, sl = 1, 1, "Neutral"
-            st.caption("Istituzionali Short Straddle. Dealer: Long Gamma.")
+            st.markdown("""<div style='background-color:#e8f5e9;padding:8px;border-left:4px solid #388e3c'><b>💤 NEUTRAL:</b> Ist. Short Straddle. Dealer: Long Gamma.</div>""", unsafe_allow_html=True)
         else:
             cs, ps, sl = -1, 1, "Bullish"
-            st.caption("Istituzionali Long Call. Dealer: Short Call / Long Put.")
+            st.markdown("""<div style='background-color:#e3f2fd;padding:8px;border-left:4px solid #1976d2'><b>🐂 BULLISH:</b> Ist. Long Call. Dealer: Short Call / Long Put.</div>""", unsafe_allow_html=True)
 
         rng = st.slider("Range %", 10, 40, 20, help="Zoom grafico")
         st.write("🧩 Filtri Muri")
@@ -478,7 +501,6 @@ with tab2:
                 regime = "LONG GAMMA" if res_s['total_gex'] > 0 else "SHORT GAMMA"
                 gpi_val = res_s['gpi']
                 
-                # Calcolo Score
                 score = gpi_val
                 if regime == "SHORT GAMMA": score += 20
                 if is_sqz: score += 15
@@ -486,7 +508,7 @@ with tab2:
                 results.append({
                     "Ticker": t, "Price": spot_s, "Regime": regime,
                     "GPI %": round(gpi_val, 1), "BB Squeeze": "✅ YES" if is_sqz else "No",
-                    "AI Scenario": readable_scen, "ScoreVal": score # Per sorting
+                    "AI Scenario": readable_scen, "ScoreVal": score
                 })
             time.sleep(0.1)
             
@@ -494,7 +516,6 @@ with tab2:
         if results:
             df_res = pd.DataFrame(results).sort_values("ScoreVal", ascending=False)
             
-            # Funzione per formattare lo score in modo "parlante"
             def format_score_col(val):
                 if val > 40: return f"{val:.1f} | ⚡ ESPLOSIVO"
                 if val > 25: return f"{val:.1f} | 🔥 ALTO"
@@ -502,7 +523,6 @@ with tab2:
                 return f"{val:.1f} | ✅ STABILE"
             
             df_res["Score"] = df_res["ScoreVal"].apply(format_score_col)
-            # Rimuoviamo la colonna di appoggio usata per il sort
             df_display = df_res.drop(columns=["ScoreVal"])
             
             def color_regime(val): return f'background-color: {"#ffcdd2" if val == "SHORT GAMMA" else "#c8e6c9"}; color: black'
