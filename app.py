@@ -21,7 +21,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.2", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
