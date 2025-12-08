@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.8 (Full Suite: Single + Scanner)
-- FIX: Codice completo senza abbreviazioni.
-- TAB 1: Analisi approfondita (Grafico, Muri, Scenari, Legenda).
-- TAB 2: Squeeze Scanner (Analisi veloce multi-ticker).
+GEX Positioning v20.9.9 (Scanner Readable Edition)
+- UPDATE: Scanner mostra etichette semplici (Bullish/Bearish/Neutral) invece di nomi tecnici.
+- LOGIC: Score Algorithm = GPI + ShortGammaBonus(20) + TechSqueezeBonus(15).
 """
 
 import streamlit as st
@@ -22,7 +21,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.8", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.9", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -83,7 +82,6 @@ def vectorized_bs_gamma(S, K, T, r, sigma):
     S = float(S)
     with np.errstate(divide='ignore', invalid='ignore'):
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-        # Gamma formula standard
         pdf = np.exp(-0.5 * d1**2) / np.sqrt(2 * np.pi)
         gamma = pdf / (S * sigma * np.sqrt(T))
     return np.nan_to_num(gamma)
@@ -108,7 +106,6 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         
         all_calls, all_puts = [], []
         
-        # Se siamo in single analysis mostriamo progress bar, altrimenti no (per scanner)
         for i, exp in enumerate(target_exps):
             try:
                 chain = tk.option_chain(exp)
@@ -137,8 +134,7 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
     return calls[(calls["strike"] >= lb) & (calls["strike"] <= ub)], puts[(puts["strike"] >= lb) & (puts["strike"] <= ub)], None
 
 def calculate_gex_metrics(calls, puts, spot, adv, call_sign, put_sign):
-    # Funzione UNIFICATA per calcolare GEX e GPI
-    try: irx = 0.045 # Default rate per velocità
+    try: irx = 0.045
     except: irx = 0.045
     
     now_dt = datetime.now(timezone.utc)
@@ -178,7 +174,7 @@ def calculate_gex_metrics(calls, puts, spot, adv, call_sign, put_sign):
     }
 
 # -----------------------------------------------------------------------------
-# 2. REPORT ANALITICO & GRAFICA (Full Version)
+# 2. REPORT ANALITICO & GRAFICA
 # -----------------------------------------------------------------------------
 
 def find_zero_crossing(df, spot):
@@ -462,10 +458,19 @@ with tab2:
             scen_tuple = suggest_market_context(hist_s)
             scen_name = scen_tuple[0]
             
-            if "Synthetic Short" in scen_name: c_s, p_s = 1, -1
-            elif "Long Straddle" in scen_name: c_s, p_s = -1, -1
-            elif "Short Straddle" in scen_name: c_s, p_s = 1, 1
-            else: c_s, p_s = -1, 1
+            # Update labels readable
+            if "Synthetic Short" in scen_name: 
+                c_s, p_s = 1, -1
+                readable_scen = "BEARISH 🐻"
+            elif "Long Straddle" in scen_name: 
+                c_s, p_s = -1, -1
+                readable_scen = "VOLATILE 💥"
+            elif "Short Straddle" in scen_name: 
+                c_s, p_s = 1, 1
+                readable_scen = "NEUTRAL 💤"
+            else: 
+                c_s, p_s = -1, 1
+                readable_scen = "BULLISH 🐂"
             
             calls_s, puts_s, err_s = get_aggregated_data(t, spot_s, n_scan_exps, 15)
             
@@ -481,7 +486,7 @@ with tab2:
                 results.append({
                     "Ticker": t, "Price": spot_s, "Regime": regime,
                     "GPI %": round(gpi_val, 1), "BB Squeeze": "✅ YES" if is_sqz else "No",
-                    "AI Scenario": scen_name.split("(")[0], "Score": round(score, 1)
+                    "AI Scenario": readable_scen, "Score": round(score, 1)
                 })
             time.sleep(0.1)
             
@@ -490,6 +495,14 @@ with tab2:
             df_res = pd.DataFrame(results).sort_values("Score", ascending=False)
             def color_regime(val): return f'background-color: {"#ffcdd2" if val == "SHORT GAMMA" else "#c8e6c9"}; color: black'
             st.dataframe(df_res.style.applymap(color_regime, subset=['Regime']).format({"Price": "${:.2f}", "GPI %": "{:.1f}%", "Score": "{:.0f}"}), use_container_width=True)
+            
+            st.markdown("""
+            **Legenda Score:**
+            - **Score:** Indice di Instabilità (GPI + Bonus Short Gamma + Bonus Squeeze).
+            - **> 40:** Zona Pericolosa (Esplosione Probabile).
+            - **20-40:** Attenzione Alta.
+            - **< 10:** Stabile.
+            """)
         else:
             st.warning("Nessun risultato.")
 
