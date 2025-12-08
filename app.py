@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.5 (Final Corrected)
-- RESTORED: Sliders per distanza muri, Colorazione zone Gamma (Verde/Rosso).
-- FIXED: Testo Flip esplicito (Sopra/Sotto), Rimossa ridondanza nome scenario nel testo.
-- LOGIC: AI Auto-Detect + Analisi Istituzionale.
+GEX Positioning v20.9.6 (Educational Edition)
+- NEW: Legenda Interattiva per spiegare Scenari Istituzionali vs Dealer.
+- NEW: Tooltips (aiuti al passaggio del mouse) sui controlli UI.
+- UI: Sezione AI rinominata in "AI Market Scenario".
+- CORE: Mantiene logica v20.9.5 (Sliders, Zone Colore, Flip Text).
 """
 
 import streamlit as st
@@ -22,7 +23,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.5", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.6", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -55,13 +56,13 @@ def suggest_market_context(hist):
         is_squeezing = last['BB_Width'] <= df['BB_Width'].quantile(0.15)
         
         if is_squeezing:
-            return ("Long Straddle (Volatile)", 1, "🤖 AI: Compressione Volatilità (Squeeze). Attesa esplosione.")
+            return ("Long Straddle (Volatile)", 1, "🤖 Rilevata Compressione Volatilità (Squeeze). Probabile esplosione di prezzo imminente.")
         elif last['Close'] > last['SMA20'] and last['SMA20'] > last['SMA50']:
-            return ("Synthetic Long (Bullish)", 3, "🤖 AI: Strong Uptrend (P > SMA20 > SMA50).")
+            return ("Synthetic Long (Bullish)", 3, "🤖 Rilevato Trend Rialzista Forte (Prezzo > SMA20 > SMA50).")
         elif last['Close'] < last['SMA20'] and last['SMA20'] < last['SMA50']:
-            return ("Synthetic Short (Bearish)", 0, "🤖 AI: Strong Downtrend (P < SMA20 < SMA50).")
+            return ("Synthetic Short (Bearish)", 0, "🤖 Rilevato Trend Ribassista Forte (Prezzo < SMA20 < SMA50).")
         else:
-            return ("Short Straddle (Neutral)", 2, "🤖 AI: Fase Laterale/Range.")
+            return ("Short Straddle (Neutral)", 2, "🤖 Nessun trend chiaro (Laterale). Probabile vendita di volatilità.")
     except Exception as e:
         return "Short Straddle (Neutral)", 2, f"AI Error: {e}"
 
@@ -193,7 +194,6 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name)
     if gpi > 8.0: gpi_desc = "ALTO"
     if gpi > 15.0: gpi_desc = "ESTREMO"
 
-    # Fix: Testo Flip Esplicito
     if synced_flip:
         cond = "SOPRA" if spot > synced_flip else "SOTTO"
         flip_desc = f"Spot {cond} il Flip ({synced_flip:.0f})"
@@ -202,7 +202,6 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name)
         
     safe_zone = True if synced_flip and spot > synced_flip else False
 
-    # Fix: Niente ripetizioni del nome scenario nel dettaglio
     if tot_gex > 0:
         if gpi > 10:
             scommessa = "🛡️ POSITIONING: PINNING"
@@ -259,7 +258,6 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     calls_agg["WallScore"] = calls_agg["GEX"].abs()
     puts_agg["WallScore"] = puts_agg["GEX"].abs()
     
-    # Logic Filters
     def get_top_levels(df, min_dist):
         df_s = df.sort_values("WallScore", ascending=False)
         levels = []
@@ -276,12 +274,8 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     cw_cands = get_top_levels(calls_agg[calls_agg["strike"] > spot], min_dist_call_val)
     pw_cands = get_top_levels(puts_agg[puts_agg["strike"] < spot], min_dist_put_val)
 
-    best_cw = calls_agg[calls_agg['strike'].isin(cw_cands)].sort_values("Score", ascending=False).iloc[0]["strike"] if cw_cands and "Score" in calls_agg else (cw_cands[0] if cw_cands else None)
-    best_pw = puts_agg[puts_agg['strike'].isin(pw_cands)].sort_values("Score", ascending=False).iloc[0]["strike"] if pw_cands and "Score" in puts_agg else (pw_cands[0] if pw_cands else None)
-    
-    # Fix per selezione best se Score non esiste ancora (usiamo WallScore)
-    if cw_cands: best_cw = calls_agg[calls_agg['strike'].isin(cw_cands)].sort_values("WallScore", ascending=False).iloc[0]["strike"]
-    if pw_cands: best_pw = puts_agg[puts_agg['strike'].isin(pw_cands)].sort_values("WallScore", ascending=False).iloc[0]["strike"]
+    best_cw = calls_agg[calls_agg['strike'].isin(cw_cands)].sort_values("WallScore", ascending=False).iloc[0]["strike"] if cw_cands else None
+    best_pw = puts_agg[puts_agg['strike'].isin(pw_cands)].sort_values("WallScore", ascending=False).iloc[0]["strike"] if pw_cands else None
 
     rep = get_analysis_content(spot, data, best_cw, best_pw, final_flip, scenario_name)
 
@@ -291,14 +285,14 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax = fig.add_subplot(gs[0])
     bar_width = spot * 0.007
     
-    # FIX: Restore Color Zones
+    # Color Zones
     x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
     x_max = max(calls_agg["strike"].max(), puts_agg["strike"].max())
     if final_flip:
         if data['total_gex'] > 0:
-            ax.axvspan(final_flip, x_max, facecolor='#E8F5E9', alpha=0.45, zorder=0) # Green Zone
+            ax.axvspan(final_flip, x_max, facecolor='#E8F5E9', alpha=0.45, zorder=0) # Green
         else:
-            ax.axvspan(x_min, final_flip, facecolor='#FFEBEE', alpha=0.45, zorder=0) # Red Zone
+            ax.axvspan(x_min, final_flip, facecolor='#FFEBEE', alpha=0.45, zorder=0) # Red
 
     ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.35, width=bar_width, label="Put OI", zorder=2)
     ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.35, width=bar_width, label="Call OI", zorder=2)
@@ -380,36 +374,79 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # -----------------------------------------------------------------------------
 # 4. STREAMLIT UI
 # -----------------------------------------------------------------------------
-st.title("⚡ GEX Positioning v20.9.5")
+st.title("⚡ GEX Positioning v20.9.6")
 c1, c2 = st.columns([1, 2])
 
 with c1:
     st.markdown("### ⚙️ Setup")
-    sym = st.text_input("Ticker", "SPY").upper()
+    sym = st.text_input("Ticker", "SPY", help="Inserisci il simbolo del sottostante (es. SPY, QQQ, NVDA).").upper()
     spot, adv, hist = get_market_data(sym)
     if spot: st.success(f"Spot: ${spot:.2f}")
     
     st.markdown("---")
-    nex = st.slider("Scadenze", 4, 12, 8)
+    nex = st.slider("Scadenze", 4, 12, 8, help="Numero di scadenze future da aggregare (filtro automatico 0-45 giorni).")
     
-    st.markdown("### 🏦 AI Scenario")
+    st.markdown("### 🤖 AI Market Scenario")
     rname, ridx, aiexp = suggest_market_context(hist) if hist is not None else ("Neutral", 2, "")
-    if hist is not None: st.info(aiexp)
+    if hist is not None: 
+        st.info(aiexp)
+    else:
+        st.warning("Dati storici non disponibili per l'AI.")
     
     opts = ["Synthetic Short (Bearish)", "Long Straddle (Volatile)", "Short Straddle (Neutral)", "Synthetic Long (Bullish)"]
-    sel = st.radio("Scenario:", opts, index=ridx)
+    sel = st.radio("Seleziona Scenario Istituzionale:", opts, index=ridx, help="Seleziona la strategia presunta degli istituzionali. L'AI ne suggerisce una, ma puoi cambiarla.")
     
-    if "Short (Bearish)" in sel: cs, ps, sl = 1, -1, "Bearish (Synth Short)"
-    elif "Long Straddle" in sel: cs, ps, sl = -1, -1, "Volatile (L-Straddle)"
-    elif "Short Straddle" in sel: cs, ps, sl = 1, 1, "Neutral (S-Straddle)"
-    else: cs, ps, sl = -1, 1, "Bullish (Synth Long)"
+    # --- LEGENDA INTERATTIVA (EDUCATIONAL) ---
+    if "Short (Bearish)" in sel:
+        cs, ps, sl = 1, -1, "Bearish (Synth Short)"
+        st.markdown("""
+        <div style='background-color: #ffebee; padding: 10px; border-radius: 5px; border-left: 5px solid #d32f2f; font-size: 0.9em;'>
+        <b>📖 Guida allo Scenario:</b><br>
+        • <b>Istituzionali:</b> Comprano Put (Ribasso) e Vendono Call (Finanziamento).<br>
+        • <b>Dealer (Controparte):</b> Short Put + Long Call.<br>
+        • <b>Effetto:</b> Il Dealer deve vendere se il prezzo scende (Accelera il ribasso).
+        </div>
+        """, unsafe_allow_html=True)
+        
+    elif "Long Straddle" in sel:
+        cs, ps, sl = -1, -1, "Volatile (L-Straddle)"
+        st.markdown("""
+        <div style='background-color: #fff3e0; padding: 10px; border-radius: 5px; border-left: 5px solid #f57c00; font-size: 0.9em;'>
+        <b>📖 Guida allo Scenario:</b><br>
+        • <b>Istituzionali:</b> Comprano sia Call che Put (Scommettono su esplosione prezzo).<br>
+        • <b>Dealer (Controparte):</b> Short Call + Short Put (Short Gamma).<br>
+        • <b>Effetto:</b> Il Dealer deve inseguire il prezzo (Compra se sale, Vende se scende). Volatilità estrema.
+        </div>
+        """, unsafe_allow_html=True)
+        
+    elif "Short Straddle" in sel:
+        cs, ps, sl = 1, 1, "Neutral (S-Straddle)"
+        st.markdown("""
+        <div style='background-color: #e8f5e9; padding: 10px; border-radius: 5px; border-left: 5px solid #388e3c; font-size: 0.9em;'>
+        <b>📖 Guida allo Scenario:</b><br>
+        • <b>Istituzionali:</b> Vendono Call e Put (Scommettono che il prezzo resti fermo).<br>
+        • <b>Dealer (Controparte):</b> Long Call + Long Put (Long Gamma).<br>
+        • <b>Effetto:</b> Il Dealer stabilizza il mercato (Vende se sale, Compra se scende). Range stretto.
+        </div>
+        """, unsafe_allow_html=True)
+        
+    else: # Synth Long
+        cs, ps, sl = -1, 1, "Bullish (Synth Long)"
+        st.markdown("""
+        <div style='background-color: #e3f2fd; padding: 10px; border-radius: 5px; border-left: 5px solid #1976d2; font-size: 0.9em;'>
+        <b>📖 Guida allo Scenario:</b><br>
+        • <b>Istituzionali:</b> Comprano Call (Rialzo) e Vendono Put (Finanziamento).<br>
+        • <b>Dealer (Controparte):</b> Short Call + Long Put.<br>
+        • <b>Effetto:</b> Simula un posizionamento azionario diretto.
+        </div>
+        """, unsafe_allow_html=True)
+    # -----------------------------------------
 
-    rng = st.slider("Range %", 10, 40, 20)
+    rng = st.slider("Range %", 10, 40, 20, help="Zoom del grafico rispetto allo spot price.")
     
-    # FIX: Sliders Ripristinati
     st.write("🧩 Filtri Muri")
-    dc = st.slider("Dist. Min. Muri CALL (%)", 0, 10, 2)
-    dp = st.slider("Dist. Min. Muri PUT (%)", 0, 10, 2)
+    dc = st.slider("Dist. Min. Muri CALL (%)", 0, 10, 2, help="Ignora i muri Call troppo vicini tra loro (in %)")
+    dp = st.slider("Dist. Min. Muri PUT (%)", 0, 10, 2, help="Ignora i muri Put troppo vicini tra loro (in %)")
     
     btn = st.button("🚀 Analizza", type="primary", use_container_width=True)
 
@@ -420,6 +457,5 @@ with c2:
         else:
             with st.spinner("Processing..."):
                 res, _ = calculate_aggregated_gex(calls, puts, spot, adv, cs, ps)
-                # Passiamo dc (dist_call) e dp (dist_put) alla funzione plot
                 fig = plot_dashboard_unified(sym, res, spot, nex, dc, dp, sl, aiexp)
                 st.pyplot(fig)
