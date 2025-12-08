@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9 (GPI & Squeeze Edition)
-- NEW: Calcolo GPI (Gamma Pressure Index) su dati Yahoo.
-- LOGIC: GPI mostra la % di Volume Giornaliero assorbita dall'Hedging per un movimento dell'1%.
-- UPDATE: Logica Squeeze integrata con la pressione del volume.
+GEX Positioning v20.9.1 (GPI & Institutional Scenarios)
+- LOGIC UPDATE: Selezione Scenario Istituzionale con inversione automatica lato Dealer.
+- NEW: Il report mostra lo scenario selezionato.
 """
 
 import streamlit as st
@@ -22,7 +21,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.1", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -32,15 +31,12 @@ def get_market_data(ticker):
     """Scarica Spot Price e Volume Medio (ADV) a 20 giorni."""
     try:
         tk = yf.Ticker(ticker)
-        # Scarichiamo 1 mese di storia per calcolare la media volumi
         hist = tk.history(period="1mo")
         
         if hist.empty:
             return None, None
         
         spot = hist["Close"].iloc[-1]
-        
-        # Calcolo Average Daily Volume (ultimi 20 giorni)
         adv = hist["Volume"].tail(20).mean()
         
         return float(spot), float(adv)
@@ -66,7 +62,7 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
         exps = tk.options
         if not exps: return None, None, "Nessuna scadenza trovata (Yahoo API)."
         
-        # --- FILTRO SCADENZE INTELLIGENTE (SWING TRADING 0-45 GG) ---
+        # --- FILTRO SCADENZE SWING (0-45 GG) ---
         today = datetime.now().date()
         valid_exps = []
         for e in exps:
@@ -98,7 +94,7 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
                 c = chain.calls.copy()
                 p = chain.puts.copy()
                 
-                # --- FILTRO DATI SPAZZATURA ---
+                # --- FILTRO DATI ---
                 c = c[(c['lastPrice'] >= 0.01) | (c['bid'] > 0)]
                 p = p[(p['lastPrice'] >= 0.01) | (p['bid'] > 0)]
 
@@ -138,7 +134,7 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
     return calls, puts, None
 
 def calculate_aggregated_gex(calls, puts, spot, adv, call_sign=1, put_sign=-1):
-    # --- RISK FREE RATE DINAMICO ---
+    # Risk Free Rate Dinamico
     try:
         irx = yf.Ticker("^IRX").history(period="1d")["Close"].iloc[-1]
         risk_free = irx / 100 
@@ -162,6 +158,7 @@ def calculate_aggregated_gex(calls, puts, spot, adv, call_sign=1, put_sign=-1):
     calls["gamma_val"] = vectorized_bs_gamma(spot, calls["strike"].values, calls["T"].values, risk_free, calls["impliedVolatility"].values)
     puts["gamma_val"] = vectorized_bs_gamma(spot, puts["strike"].values, puts["T"].values, risk_free, puts["impliedVolatility"].values)
 
+    # Calcolo GEX con i segni del Dealer
     calls["GEX"] = call_sign * calls["gamma_val"] * spot * calls["openInterest"].values * 100
     puts["GEX"] = put_sign * puts["gamma_val"] * spot * puts["openInterest"].values * 100
 
@@ -175,19 +172,12 @@ def calculate_aggregated_gex(calls, puts, spot, adv, call_sign=1, put_sign=-1):
     abs_total = abs(total_call_gex) + abs(total_put_gex)
     net_gamma_bias = (total_gex / abs_total * 100) if abs_total > 0 else 0
 
-    # --- CALCOLO GPI (GAMMA PRESSURE INDEX) ---
-    # GEX Totale nel codice è: Valore nozionale da hedgiare per movimento di $1 (se spot ~ strike).
-    # Per standardizzare, calcoliamo l'hedge necessario per un movimento dell'1% del sottostante.
-    # 1% move = Spot * 0.01
-    # Hedge Needed ($) = abs(Total GEX per $1) * (Spot * 0.01)
-    # GPI = (Hedge Needed / Daily Dollar Volume) * 100
-    
+    # Calcolo GPI
     gpi_val = 0
     if adv > 0:
         daily_dollar_volume = adv * spot
         hedge_1pct_dollar = abs(total_gex) * (spot * 0.01)
         gpi_val = (hedge_1pct_dollar / daily_dollar_volume) * 100
-    # ------------------------------------------
 
     # Calcolo Gamma Flip
     gamma_flip = None
@@ -213,7 +203,7 @@ def calculate_aggregated_gex(calls, puts, spot, adv, call_sign=1, put_sign=-1):
     }, None
 
 # -----------------------------------------------------------------------------
-# 2. REPORT ANALITICO (CON GPI)
+# 2. REPORT ANALITICO
 # -----------------------------------------------------------------------------
 
 def find_zero_crossing(df, spot):
@@ -230,7 +220,7 @@ def find_zero_crossing(df, spot):
     except:
         return None
 
-def get_analysis_content(spot, data, cw_val, pw_val, synced_flip):
+def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name):
     tot_gex = data['total_gex']
     net_bias = data['net_gamma_bias']
     gpi = data['gpi']
@@ -239,10 +229,10 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip):
     # Analisi Regime
     if tot_gex > 0:
         regime_status = "LONG GAMMA (Stabile)"
-        regime_color = "#2E8B57" # Verde scuro
+        regime_color = "#2E8B57" 
     else:
         regime_status = "SHORT GAMMA (Instabile)"
-        regime_color = "#C0392B" # Rosso scuro
+        regime_color = "#C0392B" 
 
     # Analisi GPI
     gpi_txt = f"{gpi:.1f}%"
@@ -268,40 +258,34 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip):
     bordino = "grey"
 
     # Logica Combinata (Regime + GPI)
-    # CASO A: LONG GAMMA
     if tot_gex > 0:
         if gpi > 10:
             scommessa = "🛡️ POSITIONING: PINNING (Prezzo Bloccato)"
-            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). I Dealer stanno dominando il volume e bloccano il prezzo. Volatilità soppressa con forza. Trading range stretto."
+            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer dominanti. Scenario '{scenario_name}' suggerisce che gli istituzionali sono posizionati per bassa volatilità o rialzo stabile."
         else:
             scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"
-            dettaglio = f"Regime Long Gamma classico. I Dealer ammortizzano i movimenti. Strategie 'Buy the Dip' favorite. GPI contenuto ({gpi_txt}), liquidità sufficiente."
+            dettaglio = f"Regime Long Gamma classico. GPI contenuto ({gpi_txt}). Il mercato assorbe gli shock. Scenario '{scenario_name}' attivo."
         bordino = "#2E8B57"
 
-    # CASO B: SHORT GAMMA
     elif tot_gex < 0:
-        # Pressione Volumetrica
         if gpi > 8.0:
             scommessa = "🔥 POSITIONING: SQUEEZE ALERT / CRASH"
             dettaglio = (
                 f"ALLARME ROSSO: Short Gamma + GPI Alto ({gpi_txt}). "
-                "I Dealer devono muovere volumi enormi rispetto alla media per coprirsi. "
-                "L'impatto sul prezzo sarà violento. Rischio esplosione (Squeeze) o crollo verticale."
+                f"Sotto lo scenario '{scenario_name}', i Dealer sono costretti ad accelerare i movimenti. Rischio esplosivo."
             )
-            bordino = "#8B0000" # Dark Red
+            bordino = "#8B0000"
         else:
             scommessa = "🔥 POSITIONING: VOLATILE / ACCELERAZIONE"
             dettaglio = (
-                f"Short Gamma attivo. Mancano i freni. "
-                f"GPI moderato ({gpi_txt}), quindi c'è ancora liquidità per assorbire un po' gli urti, "
-                "ma se il trend parte, i Dealer lo accelereranno."
+                f"Short Gamma attivo con GPI moderato. "
+                f"Scenario '{scenario_name}'. I Dealer non forniscono supporto, possibili accelerazioni direzionali."
             )
             bordino = "#C0392B"
 
-    # CASO C: ZONA MISTA
     elif safe_zone and tot_gex < 0:
         scommessa = "⚠️ POSITIONING: FRAGILE"
-        dettaglio = "Siamo sopra il Flip ma con Gamma negativo. Salita priva di fondamenta strutturali. Attenzione alle inversioni improvvise."
+        dettaglio = f"Siamo sopra il Flip ma con Gamma negativo. Scenario '{scenario_name}'. Attenzione alle inversioni improvvise."
         bordino = "#E67E22"
 
     cw_txt = f"{int(cw_val)}" if cw_val else "-"
@@ -322,14 +306,15 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip):
         "gpi_desc": gpi_desc_short,
         "scommessa": scommessa,
         "dettaglio": dettaglio,
-        "bordino": bordino
+        "bordino": bordino,
+        "scenario_name": scenario_name
     }
 
 # -----------------------------------------------------------------------------
 # 3. PLOTTING UNIFICATO
 # -----------------------------------------------------------------------------
 
-def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_min_put_pct):
+def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_min_put_pct, scenario_name):
     calls, puts = data["calls"], data["puts"]
     gex_strike = data["gex_by_strike"]
     total_gex = data['total_gex'] 
@@ -374,7 +359,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
         subset = puts_agg[puts_agg['strike'].isin(put_walls_candidates)]
         best_pw = subset.sort_values("WallScore", ascending=False).iloc[0]["strike"]
 
-    rep = get_analysis_content(spot, data, best_cw, best_pw, final_flip)
+    rep = get_analysis_content(spot, data, best_cw, best_pw, final_flip, scenario_name)
 
     # Setup Figura
     fig = plt.figure(figsize=(13, 9.5))
@@ -445,7 +430,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax.legend(handles=legend_elements, loc='upper left', framealpha=0.95, fontsize=9, edgecolor="#EEEEEE")
     ax.set_title(f"{symbol} GEX & GPI PROFILE (Next {n_exps} Expirations)", fontsize=13, pad=10, fontweight='bold', fontfamily='sans-serif', color="#444")
 
-    # --- SUBPLOT 2: REPORT CON GPI ---
+    # --- SUBPLOT 2: REPORT CON GPI & SCENARIO ---
     ax_rep = fig.add_subplot(gs[1])
     ax_rep.axis("off")
     
@@ -466,13 +451,15 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax_rep.text(0.18, 0.60, "|", fontsize=10, color="#BDC3C7", transform=ax_rep.transAxes)
     ax_rep.text(0.20, 0.60, f"SUP: {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", fontfamily='sans-serif', transform=ax_rep.transAxes)
     
-    # --- NUOVO: GPI INDICATOR ---
-    # Posizionato a destra, in evidenza
+    # GPI INDICATOR
     gpi_color = "#333"
     if "ALTO" in rep['gpi_desc'] or "ESTREMO" in rep['gpi_desc']: gpi_color = "#C0392B"
-    
     ax_rep.text(0.70, 0.72, "GPI (Pressure Index):", fontsize=10, color="#555", transform=ax_rep.transAxes)
     ax_rep.text(0.86, 0.72, f"{rep['gpi']} ({rep['gpi_desc']})", fontsize=10, fontweight='bold', color=gpi_color, transform=ax_rep.transAxes)
+
+    # NUOVO: MOSTRA SCENARIO SCELTO
+    ax_rep.text(0.70, 0.88, f"SCENARIO IST.:", fontsize=10, color="#555", transform=ax_rep.transAxes)
+    ax_rep.text(0.86, 0.88, f"{rep['scenario_name']}", fontsize=9, fontweight='bold', color="#2C3E50", transform=ax_rep.transAxes)
 
     # Timestamp
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -500,8 +487,8 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 4. INTERFACCIA STREAMLIT
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9 (GPI Edition)")
-st.markdown("Analisi Strutturale con **GPI (Gamma Pressure Index)**.")
+st.title("⚡ GEX Positioning v20.9.1 (GPI Edition)")
+st.markdown("Analisi Strutturale con **Scenario Istituzionale** e **GPI**.")
 
 col1, col2 = st.columns([1, 2])
 
@@ -509,7 +496,6 @@ with col1:
     st.markdown("### ⚙️ Setup Positioning")
     symbol = st.text_input("Ticker", value="SPY").upper()
     
-    # Recupero Dati Spot + ADV
     spot, adv = get_market_data(symbol)
     
     if spot:
@@ -519,15 +505,48 @@ with col1:
             st.caption(f"Vol. Medio (20gg): {adv_mil:.1f}M azioni")
     
     st.markdown("---")
-    n_exps = st.slider("Scadenze da Aggregare", 4, 12, 8, help="Seleziona fino a X scadenze, ma il sistema filtrerà solo quelle entro 45 giorni.")
+    n_exps = st.slider("Scadenze da Aggregare", 4, 12, 8)
     
     st.markdown("---")
-    st.caption("🔍 **Setup Dealer:** Per indici standard usa (Call=On, Put=Off). Per cercare SQUEEZE/MEME usa (Call=Off, Put=Off).")
-    dealer_long_call = st.checkbox("Dealer Long CALL (+)", value=True)
-    dealer_long_put = st.checkbox("Dealer Long PUT (+)", value=False)
+    st.markdown("### 🏦 Posizionamento Istituzionale")
+    st.caption("Seleziona cosa stanno facendo gli istituzionali. Il sistema calcolerà automaticamente il GEX della controparte (Dealer).")
     
-    call_sign = 1 if dealer_long_call else -1
-    put_sign = 1 if dealer_long_put else -1
+    # Mappa Scenari: (Nome Utente) -> (Call Sign Dealer, Put Sign Dealer, Label Breve)
+    # Logica Inversa:
+    # 1. Inst: Long Put + Short Call (Bear) -> Dealer: Short Put + Long Call -> Signs: Call=+1, Put=-1
+    # 2. Inst: Long Put + Long Call (Vol)  -> Dealer: Short Put + Short Call -> Signs: Call=-1, Put=-1
+    # 3. Inst: Short Put + Short Call (Neutral) -> Dealer: Long Put + Long Call -> Signs: Call=+1, Put=+1
+    # 4. Inst: Short Put + Long Call (Bull) -> Dealer: Long Put + Short Call -> Signs: Call=-1, Put=+1
+
+    scenario_options = [
+        "Synthetic Short (Bearish) [L-Put / S-Call]",
+        "Long Straddle (Volatile) [L-Put / L-Call]",
+        "Short Straddle (Neutral) [S-Put / S-Call]",
+        "Synthetic Long (Bullish) [S-Put / L-Call]"
+    ]
+    
+    selected_scenario = st.radio("Seleziona Scenario:", scenario_options)
+
+    # Logica di traduzione segni
+    if "Synthetic Short" in selected_scenario:
+        # Inst Bear -> Dealer Long Call (+1), Short Put (-1)
+        call_sign, put_sign = 1, -1
+        short_label = "Bearish (Synth Short)"
+        
+    elif "Long Straddle" in selected_scenario:
+        # Inst Vol -> Dealer Short Call (-1), Short Put (-1)
+        call_sign, put_sign = -1, -1
+        short_label = "Volatile (L-Straddle)"
+        
+    elif "Short Straddle" in selected_scenario:
+        # Inst Neutral -> Dealer Long Call (+1), Long Put (+1)
+        call_sign, put_sign = 1, 1
+        short_label = "Neutral (S-Straddle)"
+        
+    elif "Synthetic Long" in selected_scenario:
+        # Inst Bull -> Dealer Short Call (-1), Long Put (+1)
+        call_sign, put_sign = -1, 1
+        short_label = "Bullish (Synth Long)"
 
     range_pct = st.slider("Range % Prezzo", 10, 40, 20)
     
@@ -556,13 +575,13 @@ with col2:
                 else:
                     try:
                         rf_used = data_res.get('risk_free_used', 0.05)
-                        st.caption(f"ℹ️ Parametri: Risk-Free {rf_used*100:.2f}% | GPI Ratio Mode")
+                        st.caption(f"ℹ️ Dealer Signs: Call({call_sign}), Put({put_sign}) | Risk-Free {rf_used*100:.2f}%")
 
-                        fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_call, dist_put)
+                        fig = plot_dashboard_unified(symbol, data_res, spot, n_exps, dist_call, dist_put, short_label)
                         st.pyplot(fig)
                         
                         buf = BytesIO()
                         fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
-                        st.download_button("💾 Scarica Report con GPI", buf.getvalue(), f"GEX_GPI_{symbol}.png", "image/png", use_container_width=True)
+                        st.download_button("💾 Scarica Report", buf.getvalue(), f"GEX_GPI_{symbol}.png", "image/png", use_container_width=True)
                     except Exception as e:
                         st.error(f"Errore generazione grafico: {e}")
