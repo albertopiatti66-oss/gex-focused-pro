@@ -392,7 +392,7 @@ with tab1:
     c1, c2 = st.columns([1, 2])
     with c1:
         st.markdown("### ⚙️ Setup")
-        sym = st.text_input("Ticker", "SPY", help="Simbolo (es. SPY, QQQ, NVDA)").upper()
+        sym = st.text_input("Ticker", "NVDA", help="Simbolo (es. SPY, QQQ, NVDA)").upper()
         spot, adv, hist = get_market_data(sym)
         if spot: st.success(f"Spot: ${spot:.2f}")
         
