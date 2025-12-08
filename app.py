@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.12 (Ultimate Edition)
-- FEATURES MERGED:
-  1. AI Smart Trend (Gestisce Rimbalzi/Pullback e non solo trend puri).
-  2. Scanner Parlante (Score numerico + Commento "ESPLOSIVO").
-  3. Legenda Educativa & Tooltips.
+GEX Positioning v20.9.13 (Fixed Edition)
+- FIX: Ripristinato bottone Download PNG.
+- FIX: Linea Gamma Flip ora è ROSSO VIVO.
+- LOGIC: Invariata (AI Smart Trend + Scanner Parlante).
 """
 
 import streamlit as st
@@ -23,7 +22,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.12", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.13", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -52,15 +51,12 @@ def calculate_technical_squeeze(hist):
         df['BB_Width'] = (df['Upper'] - df['Lower']) / df['SMA20']
         
         last_width = df['BB_Width'].iloc[-1]
-        # Squeeze se width è nel 15% più basso degli ultimi 6 mesi
         is_squeeze = last_width <= df['BB_Width'].quantile(0.15)
         return is_squeeze
     except: return False
 
 def suggest_market_context(hist):
-    """
-    AI Auto-Detect EVOLUTA (Include Tactical Reversal & Pullback).
-    """
+    """AI Auto-Detect EVOLUTA."""
     try:
         df = hist.copy()
         df['SMA20'] = df['Close'].rolling(20).mean()
@@ -72,37 +68,23 @@ def suggest_market_context(hist):
         sma20 = last['SMA20']
         sma50 = last['SMA50']
         
-        # 1. VOLATILITY SQUEEZE (Priorità Max)
         if is_sqz:
             return ("Long Straddle (Volatile)", 1, "🤖 SQUEEZE: Volatilità compressa. Istituzionali comprano gamma in attesa di esplosione.")
-
-        # 2. STRONG UPTREND (Tutto allineato)
         if price > sma20 and sma20 > sma50:
              return ("Synthetic Long (Bullish)", 3, "🤖 STRONG UPTREND: Prezzo sopra medie allineate. Istituzionali Long.")
-
-        # 3. STRONG DOWNTREND (Tutto allineato)
         elif price < sma20 and sma20 < sma50:
              return ("Synthetic Short (Bearish)", 0, "🤖 STRONG DOWNTREND: Prezzo sotto medie allineate. Istituzionali Short.")
-             
-        # 4. TACTICAL REVERSAL (Rimbalzo: Prezzo recupera la 20 ma trend fondo è short)
         elif price > sma20 and sma20 < sma50:
             return ("Synthetic Long (Bullish)", 3, "🤖 TACTICAL REVERSAL: Prezzo recupera la SMA20. Istituzionali comprano il rimbalzo (Tactical Long).")
-
-        # 5. CORRECTION / PULLBACK (Prezzo perde la 20 ma trend fondo è long)
         elif price < sma20 and sma20 > sma50:
             return ("Synthetic Short (Bearish)", 0, "🤖 WEAKNESS/PULLBACK: Prezzo perde la SMA20. Istituzionali coprono o vanno Short breve termine.")
-
-        # 6. NEUTRAL (Solo se prezzo è esattamente sulla media o in squeeze non rilevato)
         else:
             return ("Short Straddle (Neutral)", 2, "🤖 CHOPPY: Nessuna direzione chiara. Vendita volatilità.")
-
     except Exception as e:
         return "Short Straddle (Neutral)", 2, f"AI Error: {e}"
 
 def vectorized_bs_gamma(S, K, T, r, sigma):
-    T = np.maximum(T, 0.001) 
-    sigma = np.maximum(sigma, 0.01)
-    S = float(S)
+    T = np.maximum(T, 0.001); sigma = np.maximum(sigma, 0.01); S = float(S)
     with np.errstate(divide='ignore', invalid='ignore'):
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
         pdf = np.exp(-0.5 * d1**2) / np.sqrt(2 * np.pi)
@@ -126,7 +108,6 @@ def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
             
         if not valid_exps: return None, None, "No Exps < 45 days"
         target_exps = valid_exps[:n_expirations]
-        
         all_calls, all_puts = [], []
         
         for i, exp in enumerate(target_exps):
@@ -335,7 +316,9 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax2.plot(gex_clean["strike"], gex_clean["GEX"], color='#999999', ls=':', lw=2, label="Net GEX", zorder=5)
     
     ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot", zorder=6)
-    if final_flip: ax.axvline(final_flip, color="#7F8C8D", ls="-.", lw=1.2, label="Flip", zorder=6)
+    
+    # FIX: FLIP ROSSO VIVO
+    if final_flip: ax.axvline(final_flip, color="red", ls="-.", lw=2.0, label="Flip", zorder=6)
     
     max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100
     yo = max_y * 0.03
@@ -354,7 +337,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     ax2.axhline(0, color="#BDC3C7", lw=0.5, ls='-')
     
     legs = [Patch(facecolor='#4682B4', alpha=0.5, label='Call OI'), Patch(facecolor='#DEB887', alpha=0.5, label='Put OI'), Line2D([0],[0], color='#2980B9', ls='--', label='Spot'), Line2D([0],[0], color='#999999', ls=':', label='GEX')]
-    if final_flip: legs.append(Line2D([0],[0], color='#7F8C8D', ls='-.', label='Flip'))
+    if final_flip: legs.append(Line2D([0],[0], color='red', ls='-.', label='Flip'))
     ax.legend(handles=legs, loc='upper left', fontsize=9)
     ax.set_title(f"{symbol} GEX & GPI (Next {n_exps} Exps)", fontsize=13, fontweight='bold', color="#444")
 
@@ -401,7 +384,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 3. UI PRINCIPALE (DUAL TAB)
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.12")
+st.title("⚡ GEX Positioning v20.9.13")
 tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -452,6 +435,11 @@ with tab1:
                     res = calculate_gex_metrics(calls, puts, spot, adv, cs, ps)
                     fig = plot_dashboard_unified(sym, res, spot, nex, dc, dp, sl, aiexp)
                     st.pyplot(fig)
+                    
+                    # FIX: DOWNLOAD BUTTON RIPRISTINATO
+                    buf = BytesIO()
+                    fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
+                    st.download_button("💾 Scarica Report", buf.getvalue(), f"GEX_{sym}.png", "image/png", use_container_width=True)
 
 # --- TAB 2: SQUEEZE SCANNER ---
 with tab2:
@@ -541,6 +529,5 @@ with tab2:
             """)
         else:
             st.warning("Nessun risultato.")
-
 
 
