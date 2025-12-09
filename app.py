@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.23 (Median Robust Fix)
-- FIX: check_volume_obstacle ora usa la MEDIANA (np.median) invece della Media.
-       Questo isola i muri locali ignorando i picchi storici enormi (es. MSTR a 400$).
-- LOGIC: Soglia ostacolo = 2.5x la Mediana (molto sensibile ai muri locali).
+GEX Positioning v20.9.24 (Final Polish)
+- FIX: Legenda Scanner ora include la categoria "MEDIO" (10-25).
+- UX: Sincronizzazione Ticker tra Tab 1 e Tab 2 verificata e attiva.
+- LOGIC: Median Volume Obstacle Check (v23) mantenuto.
 """
 
 import streamlit as st
@@ -22,9 +22,9 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.23", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.24", layout="wide", page_icon="⚡")
 
-# Inizializzazione Session State
+# Inizializzazione Session State (Memoria Condivisa)
 if 'shared_ticker' not in st.session_state:
     st.session_state['shared_ticker'] = "NVDA"
 
@@ -64,10 +64,9 @@ def check_earnings_risk(ticker):
 
 def check_volume_obstacle(hist, entry, target):
     """
-    Analizza il Volume Profile usando la MEDIANA per rilevare muri locali.
+    Analizza il Volume Profile usando la MEDIANA (Robust Obstacle Check).
     """
     try:
-        # Aumentiamo la sensibilità usando un periodo storico medio
         recent = hist.tail(90)
         price_data = recent['Close']
         vol_data = recent['Volume']
@@ -75,22 +74,14 @@ def check_volume_obstacle(hist, entry, target):
         lower = min(entry, target)
         upper = max(entry, target)
         
-        # Aumentiamo i bin per maggiore risoluzione sui prezzi specifici
         full_counts, full_bins = np.histogram(price_data, bins=70, weights=vol_data)
         
-        # --- FIX MEDIANA ---
-        # Filtriamo i bin con volume zero per non falsare la mediana verso il basso
         valid_counts = full_counts[full_counts > 0]
         if len(valid_counts) == 0: return False, None
         
-        # La mediana rappresenta il volume "standard" giornaliero per livello
         baseline_median = np.median(valid_counts)
-        
-        # Soglia: Se un livello ha 2.5 volte il volume mediano, è un "High Volume Node" locale
-        # Questo funziona anche se storicamente ci sono picchi 100 volte più alti altrove.
         threshold = baseline_median * 2.5
         
-        # Analisi del percorso
         bin_centers = 0.5 * (full_bins[:-1] + full_bins[1:])
         mask = (bin_centers >= lower) & (bin_centers <= upper)
         path_counts = full_counts[mask]
@@ -103,7 +94,6 @@ def check_volume_obstacle(hist, entry, target):
         obstacle_price = path_prices[max_vol_path_idx]
         
         if max_vol_path > threshold:
-            # Controllo distanza minima (1% dall'entry)
             if abs(obstacle_price - entry) > (entry * 0.01):
                 return True, obstacle_price
                 
@@ -454,7 +444,7 @@ def plot_probability_cone(spot, iv, target_price, days=30):
 # 4. UI PRINCIPALE
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.23 (Median Robust Fix)")
+st.title("⚡ GEX Positioning v20.9.24 (Final Polish)")
 tab1, tab2, tab3 = st.tabs(["📊 Analisi Singola", "🧪 Strategy Lab", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -462,8 +452,10 @@ with tab1:
     c1, c2 = st.columns([1, 2])
     with c1:
         st.markdown("### ⚙️ Setup")
-        sym_input = st.text_input("Ticker", st.session_state['shared_ticker'], help="Simbolo (es. SPY, QQQ, NVDA)").upper()
-        if sym_input != st.session_state['shared_ticker']: st.session_state['shared_ticker'] = sym_input
+        sym_input = st.text_input("Ticker", st.session_state['shared_ticker'], key="tab1_ticker").upper()
+        if sym_input != st.session_state['shared_ticker']:
+            st.session_state['shared_ticker'] = sym_input
+            
         sym = st.session_state['shared_ticker']
         spot, adv, hist = get_market_data(sym)
         if spot: st.success(f"Spot: ${spot:.2f}")
@@ -503,8 +495,10 @@ with tab2:
     st.markdown("### 🧪 Strategy Lab: Institutional Trade Architect")
     ls_col1, ls_col2 = st.columns([1, 2])
     with ls_col1:
-        t3_sym_input = st.text_input("Ticker Strategy", st.session_state['shared_ticker'], key="strat_ticker").upper()
-        if t3_sym_input != st.session_state['shared_ticker']: st.session_state['shared_ticker'] = t3_sym_input
+        t3_sym_input = st.text_input("Ticker Strategy", st.session_state['shared_ticker'], key="tab2_ticker").upper()
+        if t3_sym_input != st.session_state['shared_ticker']:
+            st.session_state['shared_ticker'] = t3_sym_input
+            
         t3_spot, t3_adv, t3_hist = get_market_data(t3_sym_input)
         if t3_spot:
             t3_hist['LogRet'] = np.log(t3_hist['Close'] / t3_hist['Close'].shift(1))
@@ -533,7 +527,7 @@ with tab2:
                 else:
                     entry = t3_spot; stop = t3_cw * 1.01; target = t3_pw * 1.01; setup_title = "🐻 BEARISH SETUP"; col_setup = "#ffebee"
                 
-                # OBSTACLE CHECK LOGIC (NEW ADAPTIVE MEDIAN)
+                # OBSTACLE CHECK LOGIC (MEDIAN)
                 is_obstacle, obst_price = check_volume_obstacle(t3_hist, entry, target)
                 obstacle_msg = ""
                 if is_obstacle:
@@ -591,5 +585,5 @@ with tab3:
             df_display = df_res.drop(columns=["ScoreVal"])
             def color_regime(val): return f'background-color: {"#ffcdd2" if val == "SHORT GAMMA" else "#c8e6c9"}; color: black'
             st.dataframe(df_display.style.applymap(color_regime, subset=['Regime']).format({"Price": "${:.2f}", "GPI %": "{:.1f}%"}), use_container_width=True)
-            st.markdown("""**Legenda Score:** > 40 (ESPLOSIVO), 25-40 (ALTO), < 10 (STABILE).""")
+            st.markdown("""**Legenda Score:** > 40 (ESPLOSIVO), 25-40 (ALTO), 10-25 (MEDIO), < 10 (STABILE).""")
         else: st.warning("Nessun risultato.")
