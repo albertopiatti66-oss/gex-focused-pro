@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.20 (Volume Obstacle Check)
-- LOGIC: Strategy Lab ora controlla se c'è un Muro Volumetrico (VPVR) tra Entry e Target.
-- UX: Alert "🚧 OBSTACLE DETECTED" se il volume ostacola il trade.
-- CORE: Motore GEX e calcoli precedenti invariati.
+GEX Positioning v20.9.21 (Syntax Fix)
+- FIX: Risolto SyntaxError alla riga 260 (struttura if/else ripristinata corretta).
+- LOGIC: Volume Obstacle Check + Probability Cone + Volume Profile attivi.
 """
 
 import streamlit as st
@@ -22,7 +21,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.20", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.21", layout="wide", page_icon="⚡")
 
 # Inizializzazione Session State
 if 'shared_ticker' not in st.session_state:
@@ -68,21 +67,16 @@ def check_volume_obstacle(hist, entry, target):
     Ritorna (False, None) se via libera, (True, Price) se c'è un muro.
     """
     try:
-        # Prendi storico recente (ultimi 3 mesi sono più rilevanti per swing)
         recent = hist.tail(60)
         price_data = recent['Close']
         vol_data = recent['Volume']
         
-        # Definisci il range da scansionare (tra entry e target)
         lower = min(entry, target)
         upper = max(entry, target)
         
-        # Calcola VPVR su tutto il range di prezzo
         full_counts, full_bins = np.histogram(price_data, bins=50, weights=vol_data)
-        max_vol_global = full_counts.max() # Il picco massimo assoluto (POC globale)
+        max_vol_global = full_counts.max()
         
-        # Filtra i bin che sono TRA entry e target
-        # Usiamo i centri dei bin per il prezzo
         bin_centers = 0.5 * (full_bins[:-1] + full_bins[1:])
         
         mask = (bin_centers >= lower) & (bin_centers <= upper)
@@ -91,16 +85,12 @@ def check_volume_obstacle(hist, entry, target):
         
         if len(path_counts) == 0: return False, None
         
-        # Trova il picco nel percorso
         max_vol_path_idx = np.argmax(path_counts)
         max_vol_path = path_counts[max_vol_path_idx]
         obstacle_price = path_prices[max_vol_path_idx]
         
-        # LOGICA OSTACOLO:
-        # Se il volume nel percorso è > 50% del volume massimo globale, è un Muro Rilevante.
-        # Inoltre, deve essere "distante" dall'entry almeno un po' (per non segnare l'entry stesso come muro)
         if max_vol_path > (max_vol_global * 0.5):
-            if abs(obstacle_price - entry) > (entry * 0.01): # 1% di distanza minima
+            if abs(obstacle_price - entry) > (entry * 0.01):
                 return True, obstacle_price
                 
         return False, None
@@ -245,28 +235,52 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name)
     if gpi > 3.0: gpi_desc = "MEDIO"
     if gpi > 8.0: gpi_desc = "ALTO"
     if gpi > 15.0: gpi_desc = "ESTREMO"
+    
     if synced_flip:
         cond = "SOPRA" if spot > synced_flip else "SOTTO"
         flip_desc = f"Spot {cond} il Flip ({synced_flip:.0f})"
     else: flip_desc = "Flip indefinito"
+    
     safe_zone = True if synced_flip and spot > synced_flip else False
+    
     if tot_gex > 0:
-        if gpi > 10: scommessa = "🛡️ POSITIONING: PINNING"; dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer bloccano il prezzo."
-        else: scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"; dettaglio = f"Long Gamma classico. GPI contenuto ({gpi_txt}). Mercato ammortizzato."
+        if gpi > 10:
+            scommessa = "🛡️ POSITIONING: PINNING"
+            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer bloccano il prezzo."
+        else:
+            scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"
+            dettaglio = f"Long Gamma classico. GPI contenuto ({gpi_txt}). Mercato ammortizzato."
         bordino = "#2E8B57"
     elif tot_gex < 0:
-        if gpi > 8.0: scommessa = "🔥 POSITIONING: SQUEEZE / CRASH"; dettaglio = f"ALLARME: Short Gamma + GPI Alto ({gpi_txt}). Rischio esplosione volatilità."
-        bordino = "#8B0000"
-        else: scommessa = "🔥 POSITIONING: ACCELERAZIONE"; dettaglio = f"Short Gamma attivo. Mancano freni. Possibili trend veloci."; bordino = "#C0392B"
-    elif safe_zone and tot_gex < 0: scommessa = "⚠️ POSITIONING: FRAGILE"; dettaglio = "Sopra Flip ma Gamma negativo. Salita fragile."; bordino = "#E67E22"
-    else: scommessa = "⚠️ POSITIONING: NEUTRALE"; dettaglio = "Configurazione mista."; bordino = "grey"
-    cw_txt = f"{int(cw_val)}" if cw_val else "-"; pw_txt = f"{int(pw_val)}" if pw_val else "-"
+        if gpi > 8.0:
+            scommessa = "🔥 POSITIONING: SQUEEZE / CRASH"
+            dettaglio = f"ALLARME: Short Gamma + GPI Alto ({gpi_txt}). Rischio esplosione volatilità."
+            bordino = "#8B0000"
+        else:
+            scommessa = "🔥 POSITIONING: ACCELERAZIONE"
+            dettaglio = f"Short Gamma attivo. Mancano freni. Possibili trend veloci."
+            bordino = "#C0392B"
+    elif safe_zone and tot_gex < 0:
+        scommessa = "⚠️ POSITIONING: FRAGILE"
+        dettaglio = "Sopra Flip ma Gamma negativo. Salita fragile."
+        bordino = "#E67E22"
+    else:
+        scommessa = "⚠️ POSITIONING: NEUTRALE"
+        dettaglio = "Configurazione mista."
+        bordino = "grey"
+        
+    cw_txt = f"{int(cw_val)}" if cw_val else "-"
+    pw_txt = f"{int(pw_val)}" if pw_val else "-"
     nb = data['net_gamma_bias']
     if nb > 5: bias = f"Call (+{nb:.0f}%)"
     elif nb < -5: bias = f"Put ({nb:.0f}%)"
     else: bias = "Neutrale"
+    
     return {
-        "spot": spot, "regime": regime_status, "regime_color": regime_color, "bias": bias, "flip_desc": flip_desc, "cw": cw_txt, "pw": pw_txt, "gpi": gpi_txt, "gpi_desc": gpi_desc, "scommessa": scommessa, "dettaglio": dettaglio, "bordino": bordino, "scenario_name": scenario_name
+        "spot": spot, "regime": regime_status, "regime_color": regime_color,
+        "bias": bias, "flip_desc": flip_desc, "cw": cw_txt, "pw": pw_txt,
+        "gpi": gpi_txt, "gpi_desc": gpi_desc, "scommessa": scommessa,
+        "dettaglio": dettaglio, "bordino": bordino, "scenario_name": scenario_name
     }
 
 def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, dist_min_put_pct, scenario_name, ai_explanation):
@@ -426,7 +440,7 @@ def plot_probability_cone(spot, iv, target_price, days=30):
 # 4. UI PRINCIPALE
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.20 (Volume Obstacle Check)")
+st.title("⚡ GEX Positioning v20.9.21 (Volume Obstacle)")
 tab1, tab2, tab3 = st.tabs(["📊 Analisi Singola", "🧪 Strategy Lab", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -505,7 +519,7 @@ with tab2:
                 else:
                     entry = t3_spot; stop = t3_cw * 1.01; target = t3_pw * 1.01; setup_title = "🐻 BEARISH SETUP"; col_setup = "#ffebee"
                 
-                # OBSTACLE CHECK LOGIC (NEW)
+                # OBSTACLE CHECK
                 is_obstacle, obst_price = check_volume_obstacle(t3_hist, entry, target)
                 obstacle_msg = ""
                 if is_obstacle:
