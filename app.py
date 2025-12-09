@@ -399,7 +399,7 @@ def plot_probability_cone(spot, iv, target_price, days=30):
 # 4. UI PRINCIPALE
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.25 (Badges Update)")
+st.title("⚡ GEX Positioning Suite v20")
 tab1, tab2, tab3 = st.tabs(["📊 Analisi Singola", "🧪 Strategy Lab", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -505,7 +505,7 @@ with tab2:
 # --- TAB 3: SQUEEZE SCANNER ---
 with tab3:
     st.markdown("### 🔥 Gamma Squeeze & Volatility Scanner")
-    default_tickers = "SPY, QQQ, IWM, NVDA, TSLA, AMD, AAPL, MSFT, AMZN, META, COIN, MSTR, GME, AMC, PLTR"
+    default_tickers = "SPY, QQQ, NVDA, TSLA, AMD, AAPL, MSFT, AMZN, META, COIN, MSTR, AMC, PLTR"
     ticker_input = st.text_area("Lista Tickers (separati da virgola)", default_tickers)
     n_scan_exps = st.slider("Scadenze Scanner (Speed vs Precision)", 2, 6, 4)
     btn_scan = st.button("🔎 Avvia Scansione", type="primary")
