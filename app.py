@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.13 (Fixed Edition)
-- FIX: Ripristinato bottone Download PNG.
-- FIX: Linea Gamma Flip ora è ROSSO VIVO.
-- LOGIC: Invariata (AI Smart Trend + Scanner Parlante).
+GEX Positioning v20.9.14 (Logic Update)
+- LOGIC: Integrata Matrix completa dei 6 Scenarios (Strong, Pullback, Reversal).
+- NEW: Gestione specifica per "Bear Rally" (Meta scenario) e "Bull Pullback".
+- NEW: Alert per rottura strutturale delle medie (Critical Reversal/Squeeze).
 """
 
 import streamlit as st
@@ -22,7 +22,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.13", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.14", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -51,12 +51,16 @@ def calculate_technical_squeeze(hist):
         df['BB_Width'] = (df['Upper'] - df['Lower']) / df['SMA20']
         
         last_width = df['BB_Width'].iloc[-1]
+        # Squeeze se la larghezza è nel 15% più basso degli ultimi 6 mesi
         is_squeeze = last_width <= df['BB_Width'].quantile(0.15)
         return is_squeeze
     except: return False
 
 def suggest_market_context(hist):
-    """AI Auto-Detect EVOLUTA."""
+    """
+    AI Auto-Detect LOGIC MATRIX V2.
+    Rileva 7 scenari distinti basati su Prezzo, SMA20 e SMA50.
+    """
     try:
         df = hist.copy()
         df['SMA20'] = df['Close'].rolling(20).mean()
@@ -68,18 +72,37 @@ def suggest_market_context(hist):
         sma20 = last['SMA20']
         sma50 = last['SMA50']
         
+        # 1. VOLATILITY SQUEEZE (Priorità assoluta)
         if is_sqz:
-            return ("Long Straddle (Volatile)", 1, "🤖 SQUEEZE: Volatilità compressa. Istituzionali comprano gamma in attesa di esplosione.")
+            return ("Long Straddle (Volatile)", 1, "🤖 SQUEEZE: Volatilità compressa (BB Width minima). Istituzionali comprano gamma in attesa di esplosione.")
+
+        # 2. STRONG TRENDS (Trend definiti e sani)
         if price > sma20 and sma20 > sma50:
-             return ("Synthetic Long (Bullish)", 3, "🤖 STRONG UPTREND: Prezzo sopra medie allineate. Istituzionali Long.")
+             return ("Synthetic Long (Bullish)", 3, "🤖 STRONG UPTREND: Prezzo sopra medie allineate. Istituzionali Long Call / Short Put.")
         elif price < sma20 and sma20 < sma50:
-             return ("Synthetic Short (Bearish)", 0, "🤖 STRONG DOWNTREND: Prezzo sotto medie allineate. Istituzionali Short.")
-        elif price > sma20 and sma20 < sma50:
-            return ("Synthetic Long (Bullish)", 3, "🤖 TACTICAL REVERSAL: Prezzo recupera la SMA20. Istituzionali comprano il rimbalzo (Tactical Long).")
-        elif price < sma20 and sma20 > sma50:
-            return ("Synthetic Short (Bearish)", 0, "🤖 WEAKNESS/PULLBACK: Prezzo perde la SMA20. Istituzionali coprono o vanno Short breve termine.")
+             return ("Synthetic Short (Bearish)", 0, "🤖 STRONG DOWNTREND: Prezzo sotto medie allineate. Istituzionali Long Put / Short Call.")
+
+        # 3. INTERMEDIATE ZONES (Pullback & Rally)
+        elif sma20 > sma50 and sma50 < price < sma20:
+            # Bullish Trend ma prezzo ritraccia tra le medie
+            return ("Synthetic Long (Bullish)", 3, "🤖 BULL PULLBACK / BUY ZONE: Ritracciamento su supporto dinamico. Ist. vendono Put (Floor) per accumulare.")
+        
+        elif sma20 < sma50 and sma20 < price < sma50:
+            # Bearish Trend ma prezzo rimbalza tra le medie (Scenario META)
+            return ("Synthetic Short (Bearish)", 0, "🤖 BEAR RALLY / FADE ZONE: Rimbalzo tecnico verso la MA50 (Resistenza). Ist. vendono Call (Muro) o comprano Put.")
+
+        # 4. CRITICAL BREAKS (Rottura struttura medie)
+        elif sma20 > sma50 and price < sma50:
+            # Trend tecnicamente Bull (20>50) ma prezzo crollato sotto la 50
+            return ("Synthetic Long (Bullish)", 3, "⚠️ CRITICAL REVERSAL ALERT: Struttura Bull (20>50) ma Prezzo sotto MA50. Tentativo di supporto estremo o Stop Loss massicci.")
+            
+        elif sma20 < sma50 and price > sma50:
+            # Trend tecnicamente Bear (20<50) ma prezzo esploso sopra la 50
+            return ("Synthetic Short (Bearish)", 0, "⚠️ CRITICAL BREAKOUT ALERT: Struttura Bear (20<50) ma Prezzo sopra MA50. Rischio Short Squeeze o Bull Trap finale.")
+
         else:
-            return ("Short Straddle (Neutral)", 2, "🤖 CHOPPY: Nessuna direzione chiara. Vendita volatilità.")
+            return ("Short Straddle (Neutral)", 2, "🤖 CHOPPY / UNDEFINED: Nessuna direzione chiara. Vendita volatilità.")
+            
     except Exception as e:
         return "Short Straddle (Neutral)", 2, f"AI Error: {e}"
 
@@ -317,7 +340,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
     
     ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot", zorder=6)
     
-    # FIX: FLIP ROSSO VIVO
+    # FLIP
     if final_flip: ax.axvline(final_flip, color="red", ls="-.", lw=2.0, label="Flip", zorder=6)
     
     max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100
@@ -384,7 +407,7 @@ def plot_dashboard_unified(symbol, data, spot, n_exps, dist_min_call_pct, dist_m
 # 3. UI PRINCIPALE (DUAL TAB)
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.13")
+st.title("⚡ GEX Positioning v20.9.14 (Logic Update)")
 tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -400,7 +423,9 @@ with tab1:
         
         st.markdown("### 🤖 AI Market Scenario")
         rname, ridx, aiexp = suggest_market_context(hist) if hist is not None else ("Neutral", 2, "")
-        if hist is not None: st.info(aiexp)
+        if hist is not None:
+            if "⚠️" in aiexp: st.warning(aiexp) # Alert Giallo per i casi critici
+            else: st.info(aiexp)
         
         opts = ["Synthetic Short (Bearish)", "Long Straddle (Volatile)", "Short Straddle (Neutral)", "Synthetic Long (Bullish)"]
         sel = st.radio("Seleziona Scenario:", opts, index=ridx)
@@ -436,7 +461,6 @@ with tab1:
                     fig = plot_dashboard_unified(sym, res, spot, nex, dc, dp, sl, aiexp)
                     st.pyplot(fig)
                     
-                    # FIX: DOWNLOAD BUTTON RIPRISTINATO
                     buf = BytesIO()
                     fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
                     st.download_button("💾 Scarica Report", buf.getvalue(), f"GEX_{sym}.png", "image/png", use_container_width=True)
