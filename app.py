@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.22 (Smart Obstacle Fix)
-- FIX: L'algoritmo 'Obstacle Check' ora usa una soglia adattiva (basata sulla media) invece che assoluta.
-       Questo permette di rilevare muri locali anche se storicamente ci sono stati volumi molto più alti altrove.
-- CORE: Tutte le altre funzionalità (GEX, Scanner, Strategy) invariate.
+GEX Positioning v20.9.23 (Median Robust Fix)
+- FIX: check_volume_obstacle ora usa la MEDIANA (np.median) invece della Media.
+       Questo isola i muri locali ignorando i picchi storici enormi (es. MSTR a 400$).
+- LOGIC: Soglia ostacolo = 2.5x la Mediana (molto sensibile ai muri locali).
 """
 
 import streamlit as st
@@ -22,7 +22,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.22", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.23", layout="wide", page_icon="⚡")
 
 # Inizializzazione Session State
 if 'shared_ticker' not in st.session_state:
@@ -64,27 +64,33 @@ def check_earnings_risk(ticker):
 
 def check_volume_obstacle(hist, entry, target):
     """
-    Analizza il Volume Profile tra Entry e Target con LOGICA ADATTIVA.
+    Analizza il Volume Profile usando la MEDIANA per rilevare muri locali.
     """
     try:
-        # Usiamo dati recenti per il contesto
-        recent = hist.tail(90) 
+        # Aumentiamo la sensibilità usando un periodo storico medio
+        recent = hist.tail(90)
         price_data = recent['Close']
         vol_data = recent['Volume']
         
         lower = min(entry, target)
         upper = max(entry, target)
         
-        # Calcolo VPVR
-        full_counts, full_bins = np.histogram(price_data, bins=60, weights=vol_data)
+        # Aumentiamo i bin per maggiore risoluzione sui prezzi specifici
+        full_counts, full_bins = np.histogram(price_data, bins=70, weights=vol_data)
         
-        # --- LOGICA ADATTIVA ---
-        # Calcoliamo la MEDIA del volume per livello di prezzo.
-        # Un "Muro" è tale se spicca rispetto alla media, non necessariamente rispetto al massimo assoluto.
-        avg_vol_profile = full_counts.mean()
-        threshold = avg_vol_profile * 1.5  # Soglia: 50% sopra la media
+        # --- FIX MEDIANA ---
+        # Filtriamo i bin con volume zero per non falsare la mediana verso il basso
+        valid_counts = full_counts[full_counts > 0]
+        if len(valid_counts) == 0: return False, None
         
-        # Filtriamo il percorso
+        # La mediana rappresenta il volume "standard" giornaliero per livello
+        baseline_median = np.median(valid_counts)
+        
+        # Soglia: Se un livello ha 2.5 volte il volume mediano, è un "High Volume Node" locale
+        # Questo funziona anche se storicamente ci sono picchi 100 volte più alti altrove.
+        threshold = baseline_median * 2.5
+        
+        # Analisi del percorso
         bin_centers = 0.5 * (full_bins[:-1] + full_bins[1:])
         mask = (bin_centers >= lower) & (bin_centers <= upper)
         path_counts = full_counts[mask]
@@ -92,16 +98,13 @@ def check_volume_obstacle(hist, entry, target):
         
         if len(path_counts) == 0: return False, None
         
-        # Trova il picco locale nel percorso
         max_vol_path_idx = np.argmax(path_counts)
         max_vol_path = path_counts[max_vol_path_idx]
         obstacle_price = path_prices[max_vol_path_idx]
         
-        # Verifica ostacolo
-        # 1. Deve superare la soglia dinamica (media * 1.5)
-        # 2. Deve essere distante dall'entry (per non flaggare l'entry stesso)
         if max_vol_path > threshold:
-            if abs(obstacle_price - entry) > (entry * 0.015): # 1.5% di distanza minima
+            # Controllo distanza minima (1% dall'entry)
+            if abs(obstacle_price - entry) > (entry * 0.01):
                 return True, obstacle_price
                 
         return False, None
@@ -451,7 +454,7 @@ def plot_probability_cone(spot, iv, target_price, days=30):
 # 4. UI PRINCIPALE
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.22 (Smart Obstacle Fix)")
+st.title("⚡ GEX Positioning v20.9.23 (Median Robust Fix)")
 tab1, tab2, tab3 = st.tabs(["📊 Analisi Singola", "🧪 Strategy Lab", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -530,7 +533,7 @@ with tab2:
                 else:
                     entry = t3_spot; stop = t3_cw * 1.01; target = t3_pw * 1.01; setup_title = "🐻 BEARISH SETUP"; col_setup = "#ffebee"
                 
-                # OBSTACLE CHECK LOGIC (NEW ADAPTIVE)
+                # OBSTACLE CHECK LOGIC (NEW ADAPTIVE MEDIAN)
                 is_obstacle, obst_price = check_volume_obstacle(t3_hist, entry, target)
                 obstacle_msg = ""
                 if is_obstacle:
