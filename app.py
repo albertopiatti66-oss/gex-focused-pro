@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.19 (Profile & Events)
-- NEW: Volume Profile (VPVR) integrato nel grafico del prezzo (sfondo grigio).
-- NEW: Earnings/Event Check (Alert se utili entro 7 giorni).
-- LOGIC: Core matematico e GEX invariati.
-- UX: Sincronizzazione Ticker attiva.
+GEX Positioning v20.9.20 (Volume Obstacle Check)
+- LOGIC: Strategy Lab ora controlla se c'è un Muro Volumetrico (VPVR) tra Entry e Target.
+- UX: Alert "🚧 OBSTACLE DETECTED" se il volume ostacola il trade.
+- CORE: Motore GEX e calcoli precedenti invariati.
 """
 
 import streamlit as st
@@ -23,7 +22,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.19", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.20", layout="wide", page_icon="⚡")
 
 # Inizializzazione Session State
 if 'shared_ticker' not in st.session_state:
@@ -45,33 +44,68 @@ def get_market_data(ticker):
         return None, None, None
 
 def check_earnings_risk(ticker):
-    """Controlla se ci sono utili nei prossimi 7 giorni."""
     try:
         tk = yf.Ticker(ticker)
-        # Yahoo Finance Calendar handling
         cal = tk.calendar
-        if cal is None or not isinstance(cal, dict): return None # Nessun dato
-        
-        # Cerca la chiave corretta (Yahoo cambia spesso format)
+        if cal is None or not isinstance(cal, dict): return None
         earnings_date = None
         if 'Earnings Date' in cal:
             earnings_list = cal['Earnings Date']
-            if len(earnings_list) > 0:
-                earnings_date = earnings_list[0]
-        elif 'Earnings High' in cal:
-             earnings_date = cal['Earnings High'][0]
-             
+            if len(earnings_list) > 0: earnings_date = earnings_list[0]
+        elif 'Earnings High' in cal: earnings_date = cal['Earnings High'][0]
         if earnings_date:
-            # Converte in date naive per confronto
             ed = earnings_date.date() if hasattr(earnings_date, 'date') else earnings_date
             today = datetime.now().date()
             delta = (ed - today).days
-            
             if 0 <= delta <= 7:
                 return f"🚨 EARNINGS ALERT: Utili previsti il {ed} (tra {delta} giorni). Rischio binario elevato!"
         return None
+    except: return None
+
+def check_volume_obstacle(hist, entry, target):
+    """
+    Analizza il Volume Profile tra Entry e Target.
+    Ritorna (False, None) se via libera, (True, Price) se c'è un muro.
+    """
+    try:
+        # Prendi storico recente (ultimi 3 mesi sono più rilevanti per swing)
+        recent = hist.tail(60)
+        price_data = recent['Close']
+        vol_data = recent['Volume']
+        
+        # Definisci il range da scansionare (tra entry e target)
+        lower = min(entry, target)
+        upper = max(entry, target)
+        
+        # Calcola VPVR su tutto il range di prezzo
+        full_counts, full_bins = np.histogram(price_data, bins=50, weights=vol_data)
+        max_vol_global = full_counts.max() # Il picco massimo assoluto (POC globale)
+        
+        # Filtra i bin che sono TRA entry e target
+        # Usiamo i centri dei bin per il prezzo
+        bin_centers = 0.5 * (full_bins[:-1] + full_bins[1:])
+        
+        mask = (bin_centers >= lower) & (bin_centers <= upper)
+        path_counts = full_counts[mask]
+        path_prices = bin_centers[mask]
+        
+        if len(path_counts) == 0: return False, None
+        
+        # Trova il picco nel percorso
+        max_vol_path_idx = np.argmax(path_counts)
+        max_vol_path = path_counts[max_vol_path_idx]
+        obstacle_price = path_prices[max_vol_path_idx]
+        
+        # LOGICA OSTACOLO:
+        # Se il volume nel percorso è > 50% del volume massimo globale, è un Muro Rilevante.
+        # Inoltre, deve essere "distante" dall'entry almeno un po' (per non segnare l'entry stesso come muro)
+        if max_vol_path > (max_vol_global * 0.5):
+            if abs(obstacle_price - entry) > (entry * 0.01): # 1% di distanza minima
+                return True, obstacle_price
+                
+        return False, None
     except:
-        return None
+        return False, None
 
 def calculate_technical_squeeze(hist):
     try:
@@ -95,25 +129,15 @@ def suggest_market_context(hist):
         price = last['Close']
         sma20 = last['SMA20']
         sma50 = last['SMA50']
-        
-        if is_sqz:
-            return ("Long Straddle (Volatile)", 1, "🤖 SQUEEZE: Volatilità compressa. Istituzionali comprano gamma in attesa di esplosione.")
-        if price > sma20 and sma20 > sma50:
-             return ("Synthetic Long (Bullish)", 3, "🤖 STRONG UPTREND: Prezzo sopra medie allineate. Istituzionali Long Call / Short Put.")
-        elif price < sma20 and sma20 < sma50:
-             return ("Synthetic Short (Bearish)", 0, "🤖 STRONG DOWNTREND: Prezzo sotto medie allineate. Istituzionali Long Put / Short Call.")
-        elif sma20 > sma50 and sma50 < price < sma20:
-            return ("Synthetic Long (Bullish)", 3, "🤖 BULL PULLBACK / BUY ZONE: Ritracciamento su supporto dinamico. Ist. vendono Put (Floor) per accumulare.")
-        elif sma20 < sma50 and sma20 < price < sma50:
-            return ("Synthetic Short (Bearish)", 0, "🤖 BEAR RALLY / FADE ZONE: Rimbalzo tecnico verso la MA50 (Resistenza). Ist. vendono Call (Muro) o comprano Put.")
-        elif sma20 > sma50 and price < sma50:
-            return ("Synthetic Long (Bullish)", 3, "⚠️ CRITICAL REVERSAL ALERT: Struttura Bull (20>50) ma Prezzo sotto MA50. Tentativo di supporto estremo o Stop Loss massicci.")
-        elif sma20 < sma50 and price > sma50:
-            return ("Synthetic Short (Bearish)", 0, "⚠️ CRITICAL BREAKOUT ALERT: Struttura Bear (20<50) ma Prezzo sopra MA50. Rischio Short Squeeze o Bull Trap finale.")
-        else:
-            return ("Short Straddle (Neutral)", 2, "🤖 CHOPPY / UNDEFINED: Nessuna direzione chiara. Vendita volatilità.")
-    except Exception as e:
-        return "Short Straddle (Neutral)", 2, f"AI Error: {e}"
+        if is_sqz: return ("Long Straddle (Volatile)", 1, "🤖 SQUEEZE: Volatilità compressa. Istituzionali comprano gamma in attesa di esplosione.")
+        if price > sma20 and sma20 > sma50: return ("Synthetic Long (Bullish)", 3, "🤖 STRONG UPTREND: Prezzo sopra medie allineate. Istituzionali Long Call / Short Put.")
+        elif price < sma20 and sma20 < sma50: return ("Synthetic Short (Bearish)", 0, "🤖 STRONG DOWNTREND: Prezzo sotto medie allineate. Istituzionali Long Put / Short Call.")
+        elif sma20 > sma50 and sma50 < price < sma20: return ("Synthetic Long (Bullish)", 3, "🤖 BULL PULLBACK / BUY ZONE: Ritracciamento su supporto dinamico. Ist. vendono Put (Floor) per accumulare.")
+        elif sma20 < sma50 and sma20 < price < sma50: return ("Synthetic Short (Bearish)", 0, "🤖 BEAR RALLY / FADE ZONE: Rimbalzo tecnico verso la MA50 (Resistenza). Ist. vendono Call (Muro) o comprano Put.")
+        elif sma20 > sma50 and price < sma50: return ("Synthetic Long (Bullish)", 3, "⚠️ CRITICAL REVERSAL ALERT: Struttura Bull (20>50) ma Prezzo sotto MA50. Tentativo di supporto estremo o Stop Loss massicci.")
+        elif sma20 < sma50 and price > sma50: return ("Synthetic Short (Bearish)", 0, "⚠️ CRITICAL BREAKOUT ALERT: Struttura Bear (20<50) ma Prezzo sopra MA50. Rischio Short Squeeze o Bull Trap finale.")
+        else: return ("Short Straddle (Neutral)", 2, "🤖 CHOPPY / UNDEFINED: Nessuna direzione chiara. Vendita volatilità.")
+    except Exception as e: return "Short Straddle (Neutral)", 2, f"AI Error: {e}"
 
 def vectorized_bs_gamma(S, K, T, r, sigma):
     T = np.maximum(T, 0.001); sigma = np.maximum(sigma, 0.01); S = float(S)
@@ -208,7 +232,7 @@ def find_zero_crossing(df, spot):
     except: return None
 
 # -----------------------------------------------------------------------------
-# 2. VISUAL & REPORT (TAB 1) + NEW VPVR
+# 2. VISUAL & REPORT (TAB 1)
 # -----------------------------------------------------------------------------
 
 def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name):
@@ -227,41 +251,22 @@ def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name)
     else: flip_desc = "Flip indefinito"
     safe_zone = True if synced_flip and spot > synced_flip else False
     if tot_gex > 0:
-        if gpi > 10:
-            scommessa = "🛡️ POSITIONING: PINNING"
-            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer bloccano il prezzo."
-        else:
-            scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"
-            dettaglio = f"Long Gamma classico. GPI contenuto ({gpi_txt}). Mercato ammortizzato."
+        if gpi > 10: scommessa = "🛡️ POSITIONING: PINNING"; dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer bloccano il prezzo."
+        else: scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"; dettaglio = f"Long Gamma classico. GPI contenuto ({gpi_txt}). Mercato ammortizzato."
         bordino = "#2E8B57"
     elif tot_gex < 0:
-        if gpi > 8.0:
-            scommessa = "🔥 POSITIONING: SQUEEZE / CRASH"
-            dettaglio = f"ALLARME: Short Gamma + GPI Alto ({gpi_txt}). Rischio esplosione volatilità."
-            bordino = "#8B0000"
-        else:
-            scommessa = "🔥 POSITIONING: ACCELERAZIONE"
-            dettaglio = f"Short Gamma attivo. Mancano freni. Possibili trend veloci."
-            bordino = "#C0392B"
-    elif safe_zone and tot_gex < 0:
-        scommessa = "⚠️ POSITIONING: FRAGILE"
-        dettaglio = "Sopra Flip ma Gamma negativo. Salita fragile."
-        bordino = "#E67E22"
-    else:
-        scommessa = "⚠️ POSITIONING: NEUTRALE"
-        dettaglio = "Configurazione mista."
-        bordino = "grey"
-    cw_txt = f"{int(cw_val)}" if cw_val else "-"
-    pw_txt = f"{int(pw_val)}" if pw_val else "-"
+        if gpi > 8.0: scommessa = "🔥 POSITIONING: SQUEEZE / CRASH"; dettaglio = f"ALLARME: Short Gamma + GPI Alto ({gpi_txt}). Rischio esplosione volatilità."
+        bordino = "#8B0000"
+        else: scommessa = "🔥 POSITIONING: ACCELERAZIONE"; dettaglio = f"Short Gamma attivo. Mancano freni. Possibili trend veloci."; bordino = "#C0392B"
+    elif safe_zone and tot_gex < 0: scommessa = "⚠️ POSITIONING: FRAGILE"; dettaglio = "Sopra Flip ma Gamma negativo. Salita fragile."; bordino = "#E67E22"
+    else: scommessa = "⚠️ POSITIONING: NEUTRALE"; dettaglio = "Configurazione mista."; bordino = "grey"
+    cw_txt = f"{int(cw_val)}" if cw_val else "-"; pw_txt = f"{int(pw_val)}" if pw_val else "-"
     nb = data['net_gamma_bias']
     if nb > 5: bias = f"Call (+{nb:.0f}%)"
     elif nb < -5: bias = f"Put ({nb:.0f}%)"
     else: bias = "Neutrale"
     return {
-        "spot": spot, "regime": regime_status, "regime_color": regime_color,
-        "bias": bias, "flip_desc": flip_desc, "cw": cw_txt, "pw": pw_txt,
-        "gpi": gpi_txt, "gpi_desc": gpi_desc, "scommessa": scommessa,
-        "dettaglio": dettaglio, "bordino": bordino, "scenario_name": scenario_name
+        "spot": spot, "regime": regime_status, "regime_color": regime_color, "bias": bias, "flip_desc": flip_desc, "cw": cw_txt, "pw": pw_txt, "gpi": gpi_txt, "gpi_desc": gpi_desc, "scommessa": scommessa, "dettaglio": dettaglio, "bordino": bordino, "scenario_name": scenario_name
     }
 
 def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, dist_min_put_pct, scenario_name, ai_explanation):
@@ -293,53 +298,27 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     fig = plt.figure(figsize=(13, 12))
     gs = gridspec.GridSpec(3, 1, height_ratios=[1.8, 2.0, 1.0], hspace=0.25)
     
-    # --- 1. PRICE CHART + VPVR ---
     ax_p = fig.add_subplot(gs[0])
-    
-    # VPVR Logic (Volume Profile)
-    # Calcolo su tutto lo storico disponibile (6mo) ma plotto solo nel range visibile
-    price_hist = hist['Close']
-    vol_hist = hist['Volume']
-    
-    # Binning del volume
+    price_hist = hist['Close']; vol_hist = hist['Volume']
     vp_bins = 50
     counts, bins = np.histogram(price_hist, bins=vp_bins, weights=vol_hist)
-    
-    # Normalizzazione per visualizzazione
-    # Il volume massimo occuperà il 30% della larghezza del grafico (asse x convertito in tempo)
-    # Qui usiamo un trucco: plottiamo barre orizzontali partendo da sinistra (tempo iniziale)
-    
     df_plot = hist.tail(80).copy()
     df_plot.reset_index(drop=True, inplace=True)
-    
-    # Plot VPVR (Background)
-    # Per farlo semplice su asse X numerico (0..80), scaliamo il volume
     max_vol = counts.max()
     scale_factor = (len(df_plot) * 0.3) / max_vol if max_vol > 0 else 0
-    
-    for i in range(len(counts)):
-        # Disegna barre grigie dal lato sinistro (index 0) verso destra
-        ax_p.barh(bins[i], counts[i] * scale_factor, height=(bins[i+1]-bins[i]), 
-                  left=0, color='#D3D3D3', alpha=0.4, zorder=0)
+    for i in range(len(counts)): ax_p.barh(bins[i], counts[i] * scale_factor, height=(bins[i+1]-bins[i]), left=0, color='#D3D3D3', alpha=0.4, zorder=0)
 
-    # Indicatori Tecnici
     if 'SMA20' not in df_plot.columns: df_plot['SMA20'] = df_plot['Close'].rolling(20).mean()
     if 'SMA50' not in df_plot.columns: df_plot['SMA50'] = df_plot['Close'].rolling(50).mean()
-    
-    # Candlesticks
-    up = df_plot[df_plot.Close >= df_plot.Open]
-    down = df_plot[df_plot.Close < df_plot.Open]
+    up = df_plot[df_plot.Close >= df_plot.Open]; down = df_plot[df_plot.Close < df_plot.Open]
     ax_p.bar(up.index, up.Close - up.Open, 0.6, bottom=up.Open, color='#26A69A', alpha=0.9, zorder=2)
     ax_p.bar(up.index, up.High - up.Close, 0.05, bottom=up.Close, color='#26A69A', zorder=2)
     ax_p.bar(up.index, up.Low - up.Open, 0.05, bottom=up.Open, color='#26A69A', zorder=2)
     ax_p.bar(down.index, down.Close - down.Open, 0.6, bottom=down.Open, color='#EF5350', alpha=0.9, zorder=2)
     ax_p.bar(down.index, down.High - down.Open, 0.05, bottom=down.Open, color='#EF5350', zorder=2)
     ax_p.bar(down.index, down.Low - down.Close, 0.05, bottom=down.Close, color='#EF5350', zorder=2)
-    
     ax_p.plot(df_plot.index, df_plot['SMA20'], color='#2979FF', lw=1.5, label='SMA 20', zorder=3)
     ax_p.plot(df_plot.index, df_plot['SMA50'], color='#FF1744', lw=1.5, label='SMA 50', zorder=3)
-    
-    # Muri Opzioni (Overlay)
     right_idx = df_plot.index[-1] + 1
     if best_cw:
         ax_p.axhline(best_cw, color='#21618C', linestyle='--', linewidth=1.2, alpha=0.8, zorder=4)
@@ -347,14 +326,9 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     if best_pw:
         ax_p.axhline(best_pw, color='#D35400', linestyle='--', linewidth=1.2, alpha=0.8, zorder=4)
         ax_p.text(right_idx, best_pw, f" Put Wall ${int(best_pw)} ", color='white', fontsize=8, fontweight='bold', va='center', ha='left', bbox=dict(boxstyle="square,pad=0.2", fc="#D35400", ec="none"), zorder=10)
-    
     ax_p.set_title(f"{symbol} Trend + Volume Profile (Gray) + Option Walls", fontsize=11, fontweight='bold', color='#444')
-    ax_p.legend(loc='upper left', fontsize=8)
-    ax_p.grid(True, alpha=0.2)
-    ax_p.set_xlim(-1, len(df_plot) + 6)
-    ax_p.set_xticks([])
+    ax_p.legend(loc='upper left', fontsize=8); ax_p.grid(True, alpha=0.2); ax_p.set_xlim(-1, len(df_plot) + 6); ax_p.set_xticks([])
 
-    # --- 2. GEX CHART ---
     ax = fig.add_subplot(gs[1])
     bar_width = spot * 0.007
     x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
@@ -388,7 +362,6 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
         ax.text(w, val - yo, f"SUP {int(w)}", color="#D35400", fontsize=8, fontweight=fw, ha='center', va='top', bbox=bbox, zorder=20)
     ax.set_ylabel("OI", fontsize=10, fontweight='bold', color="#777"); ax2.set_ylabel("GEX", fontsize=10, color="#777"); ax2.axhline(0, color="#BDC3C7", lw=0.5, ls='-'); ax.legend(loc='upper left', fontsize=9); ax.set_title(f"Options Positioning (Next {n_exps} Exps)", fontsize=11, fontweight='bold', color="#444")
 
-    # --- 3. REPORT ---
     axr = fig.add_subplot(gs[2]); axr.axis("off")
     axr.text(0.02, 0.90, f"SPOT: {rep['spot']:.2f}", fontsize=11, fontweight='bold', color="#333", transform=axr.transAxes)
     axr.text(0.20, 0.90, "|", fontsize=11, color="#BDC3C7", transform=axr.transAxes)
@@ -416,7 +389,7 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     return fig
 
 # -----------------------------------------------------------------------------
-# 3. STRATEGY LAB & SQUEEZE SCANNER (FUNCTIONS)
+# 3. FUNCTIONS FOR TABS 2 & 3
 # -----------------------------------------------------------------------------
 
 def plot_probability_cone(spot, iv, target_price, days=30):
@@ -453,7 +426,7 @@ def plot_probability_cone(spot, iv, target_price, days=30):
 # 4. UI PRINCIPALE
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.19 (Profile & Events)")
+st.title("⚡ GEX Positioning v20.9.20 (Volume Obstacle Check)")
 tab1, tab2, tab3 = st.tabs(["📊 Analisi Singola", "🧪 Strategy Lab", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -466,11 +439,8 @@ with tab1:
         sym = st.session_state['shared_ticker']
         spot, adv, hist = get_market_data(sym)
         if spot: st.success(f"Spot: ${spot:.2f}")
-        
-        # EARNINGS ALERT
         earn_alert = check_earnings_risk(sym)
         if earn_alert: st.error(earn_alert)
-        
         nex = st.slider("Scadenze", 4, 12, 8, help="Num. scadenze future")
         st.markdown("### 🤖 AI Market Scenario")
         rname, ridx, aiexp = suggest_market_context(hist) if hist is not None else ("Neutral", 2, "")
@@ -488,7 +458,6 @@ with tab1:
         dc = st.slider("Dist. Min. Muri CALL (%)", 0, 10, 2)
         dp = st.slider("Dist. Min. Muri PUT (%)", 0, 10, 2)
         btn = st.button("🚀 Analizza Single", type="primary", use_container_width=True)
-
     with c2:
         if btn and spot:
             calls, puts, err = get_aggregated_data(sym, spot, nex, rng)
@@ -513,11 +482,8 @@ with tab2:
             t3_hist['LogRet'] = np.log(t3_hist['Close'] / t3_hist['Close'].shift(1))
             hv_current = t3_hist['LogRet'].tail(20).std() * np.sqrt(252)
             st.metric("Spot Price", f"${t3_spot:.2f}"); st.metric("Historical Vol (HV20)", f"{hv_current:.1%}")
-            
-            # EARNINGS ALERT TAB 2
             t3_earn = check_earnings_risk(t3_sym_input)
             if t3_earn: st.error(t3_earn)
-            
             t3_scen = suggest_market_context(t3_hist)
             st.info(f"AI Context: {t3_scen[0]}")
             btn_strat = st.button("🛠️ Genera Trade Setup", type="primary")
@@ -538,9 +504,16 @@ with tab2:
                     entry = t3_spot; stop = t3_pw * 0.99; target = t3_cw * 0.99; setup_title = "🐂 BULLISH SETUP"; col_setup = "#e3f2fd"
                 else:
                     entry = t3_spot; stop = t3_cw * 1.01; target = t3_pw * 1.01; setup_title = "🐻 BEARISH SETUP"; col_setup = "#ffebee"
+                
+                # OBSTACLE CHECK LOGIC (NEW)
+                is_obstacle, obst_price = check_volume_obstacle(t3_hist, entry, target)
+                obstacle_msg = ""
+                if is_obstacle:
+                    obstacle_msg = f"""<br><div style='background-color:#FFCCBC; color:#D84315; padding:8px; border-radius:5px;'><b>🚧 OBSTACLE ALERT:</b> Muro di Volume rilevato a <b>${obst_price:.2f}</b>. <br>Il prezzo potrebbe rimbalzare qui prima di raggiungere il target GEX. Considera Take Profit anticipato.</div>"""
+
                 risk = abs(entry - stop); reward = abs(target - entry); rr_ratio = reward / risk if risk > 0 else 0
                 st.markdown(f"#### 📊 Volatility Regime: {vol_regime}"); st.write(f"IV Est: **{iv_est:.1%}** vs HV: **{hv_current:.1%}** -> Suggerimento: **{strat_type}**"); st.markdown("---")
-                st.markdown(f"""<div style="background-color: {col_setup}; padding: 15px; border-radius: 10px; border: 1px solid #ddd;"><h3 style="margin-top:0">{setup_title}</h3><p><b>📐 ENTRY:</b> ${entry:.2f} (Spot)</p><p><b>🛑 STOP LOSS:</b> ${stop:.2f} (Livello Muro Opzioni: ${t3_pw if bias_bull else t3_cw:.0f})</p><p><b>🎯 TARGET:</b> ${target:.2f} (Livello Muro Opzioni: ${t3_cw if bias_bull else t3_pw:.0f})</p><hr><p style="font-size: 18px"><b>⚖️ Risk/Reward: 1 : {rr_ratio:.2f}</b></p></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div style="background-color: {col_setup}; padding: 15px; border-radius: 10px; border: 1px solid #ddd;"><h3 style="margin-top:0">{setup_title}</h3><p><b>📐 ENTRY:</b> ${entry:.2f} (Spot)</p><p><b>🛑 STOP LOSS:</b> ${stop:.2f} (Livello Muro Opzioni: ${t3_pw if bias_bull else t3_cw:.0f})</p><p><b>🎯 TARGET:</b> ${target:.2f} (Livello Muro Opzioni: ${t3_cw if bias_bull else t3_pw:.0f})</p>{obstacle_msg}<hr><p style="font-size: 18px"><b>⚖️ Risk/Reward: 1 : {rr_ratio:.2f}</b></p></div>""", unsafe_allow_html=True)
                 fig_cone, txt_explanation = plot_probability_cone(t3_spot, iv_est, target, days=30)
                 st.pyplot(fig_cone); st.info(txt_explanation)
             else: st.error("Dati opzioni non disponibili per la strategia.")
@@ -563,9 +536,7 @@ with tab3:
             is_sqz = calculate_technical_squeeze(hist_s)
             scen_tuple = suggest_market_context(hist_s)
             scen_name = scen_tuple[0]
-            # Warning per Earnings nello Scanner
             warn_earn = "⚠️ EARNINGS" if check_earnings_risk(t) else ""
-            
             if "Synthetic Short" in scen_name: c_s, p_s, readable_scen = 1, -1, "BEARISH 🐻"
             elif "Long Straddle" in scen_name: c_s, p_s, readable_scen = -1, -1, "VOLATILE 💥"
             elif "Short Straddle" in scen_name: c_s, p_s, readable_scen = 1, 1, "NEUTRAL 💤"
