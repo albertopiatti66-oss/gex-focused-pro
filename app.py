@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.15 (Visual Suite)
-- NEW: Aggiunto Grafico Candlestick con SMA20/50 nel report (3-Row Layout).
-- LOGIC: Matrix Completa (Bear Rally, Pullback, Critical Alerts) conservata.
-- FIX: Disegno candele nativo (senza mplfinance).
+GEX Positioning v20.9.16 (Wall Overlay Update)
+- NEW: I Muri (Call/Put Walls) sono ora proiettati come linee tratteggiate sul grafico del prezzo (Top Chart).
+- NEW: Etichette colorate sull'asse destro indicano i livelli chiave delle opzioni.
+- LOGIC: Invariata (Matrix Completa + Visual Suite).
 """
 
 import streamlit as st
@@ -22,7 +22,7 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.15", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.16", layout="wide", page_icon="⚡")
 
 # -----------------------------------------------------------------------------
 # 1. MOTORE MATEMATICO & DATI
@@ -71,7 +71,7 @@ def suggest_market_context(hist):
         sma20 = last['SMA20']
         sma50 = last['SMA50']
         
-        # 1. VOLATILITY SQUEEZE (Priorità assoluta)
+        # 1. VOLATILITY SQUEEZE
         if is_sqz:
             return ("Long Straddle (Volatile)", 1, "🤖 SQUEEZE: Volatilità compressa (BB Width minima). Istituzionali comprano gamma in attesa di esplosione.")
 
@@ -81,7 +81,7 @@ def suggest_market_context(hist):
         elif price < sma20 and sma20 < sma50:
              return ("Synthetic Short (Bearish)", 0, "🤖 STRONG DOWNTREND: Prezzo sotto medie allineate. Istituzionali Long Put / Short Call.")
 
-        # 3. INTERMEDIATE ZONES (Pullback & Rally)
+        # 3. INTERMEDIATE ZONES
         elif sma20 > sma50 and sma50 < price < sma20:
             return ("Synthetic Long (Bullish)", 3, "🤖 BULL PULLBACK / BUY ZONE: Ritracciamento su supporto dinamico. Ist. vendono Put (Floor) per accumulare.")
         
@@ -311,18 +311,16 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     # --- 1. PRICE CHART (CANDLESTICK) ---
     ax_p = fig.add_subplot(gs[0])
     
-    # Preparazione dati (Ultimi 80 giorni)
     df_plot = hist.tail(80).copy()
     df_plot.reset_index(drop=True, inplace=True)
     
     if 'SMA20' not in df_plot.columns: df_plot['SMA20'] = df_plot['Close'].rolling(20).mean()
     if 'SMA50' not in df_plot.columns: df_plot['SMA50'] = df_plot['Close'].rolling(50).mean()
     
-    # Colori Candele
+    # Candele
     up = df_plot[df_plot.Close >= df_plot.Open]
     down = df_plot[df_plot.Close < df_plot.Open]
     
-    # Disegno manuale Candele
     ax_p.bar(up.index, up.Close - up.Open, 0.6, bottom=up.Open, color='#26A69A', alpha=0.9)
     ax_p.bar(up.index, up.High - up.Close, 0.05, bottom=up.Close, color='#26A69A')
     ax_p.bar(up.index, up.Low - up.Open, 0.05, bottom=up.Open, color='#26A69A')
@@ -331,21 +329,38 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     ax_p.bar(down.index, down.High - down.Open, 0.05, bottom=down.Open, color='#EF5350')
     ax_p.bar(down.index, down.Low - down.Close, 0.05, bottom=down.Close, color='#EF5350')
     
-    # SMAs
     ax_p.plot(df_plot.index, df_plot['SMA20'], color='#2979FF', lw=1.5, label='SMA 20')
     ax_p.plot(df_plot.index, df_plot['SMA50'], color='#FF1744', lw=1.5, label='SMA 50')
+
+    # --- NEW: OPTION WALL OVERLAYS ---
+    right_idx = df_plot.index[-1] + 1
     
-    ax_p.set_title(f"{symbol} Trend Structure (SMA 20 vs SMA 50)", fontsize=11, fontweight='bold', color='#444')
+    # RESISTENZA (Call Wall)
+    if best_cw:
+        ax_p.axhline(best_cw, color='#21618C', linestyle='--', linewidth=1.2, alpha=0.8)
+        # Etichetta asse destro
+        ax_p.text(right_idx, best_cw, f" Call Wall ${int(best_cw)} ", 
+                  color='white', fontsize=8, fontweight='bold', va='center', ha='left',
+                  bbox=dict(boxstyle="square,pad=0.2", fc="#21618C", ec="none"))
+
+    # SUPPORTO (Put Wall)
+    if best_pw:
+        ax_p.axhline(best_pw, color='#D35400', linestyle='--', linewidth=1.2, alpha=0.8)
+        # Etichetta asse destro
+        ax_p.text(right_idx, best_pw, f" Put Wall ${int(best_pw)} ", 
+                  color='white', fontsize=8, fontweight='bold', va='center', ha='left',
+                  bbox=dict(boxstyle="square,pad=0.2", fc="#D35400", ec="none"))
+
+    ax_p.set_title(f"{symbol} Trend Structure + Options Walls", fontsize=11, fontweight='bold', color='#444')
     ax_p.legend(loc='upper left', fontsize=8)
     ax_p.grid(True, alpha=0.2)
-    ax_p.set_xlim(-1, len(df_plot))
-    ax_p.set_xticks([]) # Nascondo date per pulizia (tanto si vede la struttura)
+    ax_p.set_xlim(-1, len(df_plot) + 6) # Spazio extra a destra per le etichette
+    ax_p.set_xticks([])
 
     # --- 2. GEX CHART (MIDDLE) ---
     ax = fig.add_subplot(gs[1])
     bar_width = spot * 0.007
     
-    # Color Zones
     x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
     x_max = max(calls_agg["strike"].max(), puts_agg["strike"].max())
     if final_flip:
@@ -432,7 +447,7 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
 # 3. UI PRINCIPALE (DUAL TAB)
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.15 (Visual Suite)")
+st.title("⚡ GEX Positioning v20.9.16 (Wall Overlay)")
 tab1, tab2 = st.tabs(["📊 Analisi Singola", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -483,7 +498,6 @@ with tab1:
             else:
                 with st.spinner("Processing..."):
                     res = calculate_gex_metrics(calls, puts, spot, adv, cs, ps)
-                    # Passiamo 'hist' alla funzione di plot per disegnare le candele
                     fig = plot_dashboard_unified(sym, res, spot, hist, nex, dc, dp, sl, aiexp)
                     st.pyplot(fig)
                     
