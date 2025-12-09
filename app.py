@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.18 (Sync & Smart Cone)
-- UX: Sincronizzazione automatica Ticker tra Tab 1 e Tab 2.
-- ORDER: Tab 1 (Analisi) -> Tab 2 (Strategy) -> Tab 3 (Scanner).
-- LOGIC: Spiegazione dinamica "Probability Cone" con valutazione realistica del Target.
-- SAFE: Motore matematico preservato.
+GEX Positioning v20.9.19 (Profile & Events)
+- NEW: Volume Profile (VPVR) integrato nel grafico del prezzo (sfondo grigio).
+- NEW: Earnings/Event Check (Alert se utili entro 7 giorni).
+- LOGIC: Core matematico e GEX invariati.
+- UX: Sincronizzazione Ticker attiva.
 """
 
 import streamlit as st
@@ -23,9 +23,9 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.18", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.19", layout="wide", page_icon="⚡")
 
-# Inizializzazione Session State per il Ticker Condiviso
+# Inizializzazione Session State
 if 'shared_ticker' not in st.session_state:
     st.session_state['shared_ticker'] = "NVDA"
 
@@ -44,6 +44,35 @@ def get_market_data(ticker):
     except:
         return None, None, None
 
+def check_earnings_risk(ticker):
+    """Controlla se ci sono utili nei prossimi 7 giorni."""
+    try:
+        tk = yf.Ticker(ticker)
+        # Yahoo Finance Calendar handling
+        cal = tk.calendar
+        if cal is None or not isinstance(cal, dict): return None # Nessun dato
+        
+        # Cerca la chiave corretta (Yahoo cambia spesso format)
+        earnings_date = None
+        if 'Earnings Date' in cal:
+            earnings_list = cal['Earnings Date']
+            if len(earnings_list) > 0:
+                earnings_date = earnings_list[0]
+        elif 'Earnings High' in cal:
+             earnings_date = cal['Earnings High'][0]
+             
+        if earnings_date:
+            # Converte in date naive per confronto
+            ed = earnings_date.date() if hasattr(earnings_date, 'date') else earnings_date
+            today = datetime.now().date()
+            delta = (ed - today).days
+            
+            if 0 <= delta <= 7:
+                return f"🚨 EARNINGS ALERT: Utili previsti il {ed} (tra {delta} giorni). Rischio binario elevato!"
+        return None
+    except:
+        return None
+
 def calculate_technical_squeeze(hist):
     try:
         df = hist.copy()
@@ -52,8 +81,7 @@ def calculate_technical_squeeze(hist):
         df['Upper'] = df['SMA20'] + (df['STD'] * 2)
         df['Lower'] = df['SMA20'] - (df['STD'] * 2)
         df['BB_Width'] = (df['Upper'] - df['Lower']) / df['SMA20']
-        last_width = df['BB_Width'].iloc[-1]
-        is_squeeze = last_width <= df['BB_Width'].quantile(0.15)
+        is_squeeze = df['BB_Width'].iloc[-1] <= df['BB_Width'].quantile(0.15)
         return is_squeeze
     except: return False
 
@@ -180,7 +208,7 @@ def find_zero_crossing(df, spot):
     except: return None
 
 # -----------------------------------------------------------------------------
-# 2. FUNZIONI VISUAL & REPORT (TAB 1)
+# 2. VISUAL & REPORT (TAB 1) + NEW VPVR
 # -----------------------------------------------------------------------------
 
 def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name):
@@ -265,31 +293,68 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     fig = plt.figure(figsize=(13, 12))
     gs = gridspec.GridSpec(3, 1, height_ratios=[1.8, 2.0, 1.0], hspace=0.25)
     
+    # --- 1. PRICE CHART + VPVR ---
     ax_p = fig.add_subplot(gs[0])
+    
+    # VPVR Logic (Volume Profile)
+    # Calcolo su tutto lo storico disponibile (6mo) ma plotto solo nel range visibile
+    price_hist = hist['Close']
+    vol_hist = hist['Volume']
+    
+    # Binning del volume
+    vp_bins = 50
+    counts, bins = np.histogram(price_hist, bins=vp_bins, weights=vol_hist)
+    
+    # Normalizzazione per visualizzazione
+    # Il volume massimo occuperà il 30% della larghezza del grafico (asse x convertito in tempo)
+    # Qui usiamo un trucco: plottiamo barre orizzontali partendo da sinistra (tempo iniziale)
+    
     df_plot = hist.tail(80).copy()
     df_plot.reset_index(drop=True, inplace=True)
+    
+    # Plot VPVR (Background)
+    # Per farlo semplice su asse X numerico (0..80), scaliamo il volume
+    max_vol = counts.max()
+    scale_factor = (len(df_plot) * 0.3) / max_vol if max_vol > 0 else 0
+    
+    for i in range(len(counts)):
+        # Disegna barre grigie dal lato sinistro (index 0) verso destra
+        ax_p.barh(bins[i], counts[i] * scale_factor, height=(bins[i+1]-bins[i]), 
+                  left=0, color='#D3D3D3', alpha=0.4, zorder=0)
+
+    # Indicatori Tecnici
     if 'SMA20' not in df_plot.columns: df_plot['SMA20'] = df_plot['Close'].rolling(20).mean()
     if 'SMA50' not in df_plot.columns: df_plot['SMA50'] = df_plot['Close'].rolling(50).mean()
+    
+    # Candlesticks
     up = df_plot[df_plot.Close >= df_plot.Open]
     down = df_plot[df_plot.Close < df_plot.Open]
-    ax_p.bar(up.index, up.Close - up.Open, 0.6, bottom=up.Open, color='#26A69A', alpha=0.9)
-    ax_p.bar(up.index, up.High - up.Close, 0.05, bottom=up.Close, color='#26A69A')
-    ax_p.bar(up.index, up.Low - up.Open, 0.05, bottom=up.Open, color='#26A69A')
-    ax_p.bar(down.index, down.Close - down.Open, 0.6, bottom=down.Open, color='#EF5350', alpha=0.9)
-    ax_p.bar(down.index, down.High - down.Open, 0.05, bottom=down.Open, color='#EF5350')
-    ax_p.bar(down.index, down.Low - down.Close, 0.05, bottom=down.Close, color='#EF5350')
-    ax_p.plot(df_plot.index, df_plot['SMA20'], color='#2979FF', lw=1.5, label='SMA 20')
-    ax_p.plot(df_plot.index, df_plot['SMA50'], color='#FF1744', lw=1.5, label='SMA 50')
+    ax_p.bar(up.index, up.Close - up.Open, 0.6, bottom=up.Open, color='#26A69A', alpha=0.9, zorder=2)
+    ax_p.bar(up.index, up.High - up.Close, 0.05, bottom=up.Close, color='#26A69A', zorder=2)
+    ax_p.bar(up.index, up.Low - up.Open, 0.05, bottom=up.Open, color='#26A69A', zorder=2)
+    ax_p.bar(down.index, down.Close - down.Open, 0.6, bottom=down.Open, color='#EF5350', alpha=0.9, zorder=2)
+    ax_p.bar(down.index, down.High - down.Open, 0.05, bottom=down.Open, color='#EF5350', zorder=2)
+    ax_p.bar(down.index, down.Low - down.Close, 0.05, bottom=down.Close, color='#EF5350', zorder=2)
+    
+    ax_p.plot(df_plot.index, df_plot['SMA20'], color='#2979FF', lw=1.5, label='SMA 20', zorder=3)
+    ax_p.plot(df_plot.index, df_plot['SMA50'], color='#FF1744', lw=1.5, label='SMA 50', zorder=3)
+    
+    # Muri Opzioni (Overlay)
     right_idx = df_plot.index[-1] + 1
     if best_cw:
-        ax_p.axhline(best_cw, color='#21618C', linestyle='--', linewidth=1.2, alpha=0.8)
-        ax_p.text(right_idx, best_cw, f" Call Wall ${int(best_cw)} ", color='white', fontsize=8, fontweight='bold', va='center', ha='left', bbox=dict(boxstyle="square,pad=0.2", fc="#21618C", ec="none"))
+        ax_p.axhline(best_cw, color='#21618C', linestyle='--', linewidth=1.2, alpha=0.8, zorder=4)
+        ax_p.text(right_idx, best_cw, f" Call Wall ${int(best_cw)} ", color='white', fontsize=8, fontweight='bold', va='center', ha='left', bbox=dict(boxstyle="square,pad=0.2", fc="#21618C", ec="none"), zorder=10)
     if best_pw:
-        ax_p.axhline(best_pw, color='#D35400', linestyle='--', linewidth=1.2, alpha=0.8)
-        ax_p.text(right_idx, best_pw, f" Put Wall ${int(best_pw)} ", color='white', fontsize=8, fontweight='bold', va='center', ha='left', bbox=dict(boxstyle="square,pad=0.2", fc="#D35400", ec="none"))
-    ax_p.set_title(f"{symbol} Trend Structure + Options Walls", fontsize=11, fontweight='bold', color='#444')
-    ax_p.legend(loc='upper left', fontsize=8); ax_p.grid(True, alpha=0.2); ax_p.set_xlim(-1, len(df_plot) + 6); ax_p.set_xticks([])
+        ax_p.axhline(best_pw, color='#D35400', linestyle='--', linewidth=1.2, alpha=0.8, zorder=4)
+        ax_p.text(right_idx, best_pw, f" Put Wall ${int(best_pw)} ", color='white', fontsize=8, fontweight='bold', va='center', ha='left', bbox=dict(boxstyle="square,pad=0.2", fc="#D35400", ec="none"), zorder=10)
+    
+    ax_p.set_title(f"{symbol} Trend + Volume Profile (Gray) + Option Walls", fontsize=11, fontweight='bold', color='#444')
+    ax_p.legend(loc='upper left', fontsize=8)
+    ax_p.grid(True, alpha=0.2)
+    ax_p.set_xlim(-1, len(df_plot) + 6)
+    ax_p.set_xticks([])
 
+    # --- 2. GEX CHART ---
     ax = fig.add_subplot(gs[1])
     bar_width = spot * 0.007
     x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
@@ -323,6 +388,7 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
         ax.text(w, val - yo, f"SUP {int(w)}", color="#D35400", fontsize=8, fontweight=fw, ha='center', va='top', bbox=bbox, zorder=20)
     ax.set_ylabel("OI", fontsize=10, fontweight='bold', color="#777"); ax2.set_ylabel("GEX", fontsize=10, color="#777"); ax2.axhline(0, color="#BDC3C7", lw=0.5, ls='-'); ax.legend(loc='upper left', fontsize=9); ax.set_title(f"Options Positioning (Next {n_exps} Exps)", fontsize=11, fontweight='bold', color="#444")
 
+    # --- 3. REPORT ---
     axr = fig.add_subplot(gs[2]); axr.axis("off")
     axr.text(0.02, 0.90, f"SPOT: {rep['spot']:.2f}", fontsize=11, fontweight='bold', color="#333", transform=axr.transAxes)
     axr.text(0.20, 0.90, "|", fontsize=11, color="#BDC3C7", transform=axr.transAxes)
@@ -350,19 +416,16 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     return fig
 
 # -----------------------------------------------------------------------------
-# 3. FUNZIONI PER TAB 2 (STRATEGY LAB)
+# 3. STRATEGY LAB & SQUEEZE SCANNER (FUNCTIONS)
 # -----------------------------------------------------------------------------
 
 def plot_probability_cone(spot, iv, target_price, days=30):
-    """Disegna il cono di probabilità con il Target Price e spiegazione."""
     t_vals = np.arange(1, days + 1)
     sigma = iv
-    
     upper1 = spot * np.exp(sigma * np.sqrt(t_vals / 365.0))
     lower1 = spot * np.exp(-sigma * np.sqrt(t_vals / 365.0))
     upper2 = spot * np.exp(2 * sigma * np.sqrt(t_vals / 365.0))
     lower2 = spot * np.exp(-2 * sigma * np.sqrt(t_vals / 365.0))
-
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(t_vals, upper1, color='green', linestyle='--', alpha=0.7, label='1 SD (68%)')
     ax.plot(t_vals, lower1, color='green', linestyle='--', alpha=0.7)
@@ -370,37 +433,27 @@ def plot_probability_cone(spot, iv, target_price, days=30):
     ax.plot(t_vals, lower2, color='orange', linestyle=':', alpha=0.6)
     ax.fill_between(t_vals, lower1, upper1, color='green', alpha=0.1)
     ax.fill_between(t_vals, lower2, upper2, color='orange', alpha=0.05)
-    
     ax.axhline(spot, color='blue', alpha=0.5, label='Spot Price')
     ax.axhline(target_price, color='purple', linestyle='-.', linewidth=2, label=f'Target: ${target_price:.2f}')
-    
     ax.set_title(f"Probability Cone (IV: {iv:.1%}) - Next {days} Days")
     ax.set_xlabel("Days Forward")
     ax.set_ylabel("Price")
     ax.legend(loc='upper left')
-    
-    # Calcolo Probabilità Target (Logic Explanation)
     final_1sd_up = upper1[-1]; final_1sd_low = lower1[-1]
     final_2sd_up = upper2[-1]; final_2sd_low = lower2[-1]
-    
     explanation = ""
     is_inside_1sd = final_1sd_low <= target_price <= final_1sd_up
     is_inside_2sd = final_2sd_low <= target_price <= final_2sd_up
-    
-    if is_inside_1sd:
-        explanation = "✅ **TARGET AD ALTA PROBABILITÀ:** Il livello rientra nella prima deviazione standard (68%). È statisticamente molto probabile che venga toccato."
-    elif is_inside_2sd:
-        explanation = "⚖️ **TARGET MEDIO/ALTO:** Il livello è nella zona tra 1 e 2 SD. Richiede un movimento deciso ma non impossibile (Probabilità < 30%)."
-    else:
-        explanation = "⚠️ **TARGET AMBIZIOSO / IMPROBABILE:** Il livello è oltre le 2 Deviazioni Standard (zona estrema). La probabilità statistica è inferiore al 5%."
-
+    if is_inside_1sd: explanation = "✅ **TARGET AD ALTA PROBABILITÀ:** Il livello rientra nella prima deviazione standard (68%). È statisticamente molto probabile che venga toccato."
+    elif is_inside_2sd: explanation = "⚖️ **TARGET MEDIO/ALTO:** Il livello è nella zona tra 1 e 2 SD. Richiede un movimento deciso ma non impossibile (Probabilità < 30%)."
+    else: explanation = "⚠️ **TARGET AMBIZIOSO / IMPROBABILE:** Il livello è oltre le 2 Deviazioni Standard (zona estrema). La probabilità statistica è inferiore al 5%."
     return fig, explanation
 
 # -----------------------------------------------------------------------------
-# 4. UI PRINCIPALE (TRIPLE TAB REORDERED)
+# 4. UI PRINCIPALE
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning v20.9.18 (Sync & Smart)")
+st.title("⚡ GEX Positioning v20.9.19 (Profile & Events)")
 tab1, tab2, tab3 = st.tabs(["📊 Analisi Singola", "🧪 Strategy Lab", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -408,16 +461,17 @@ with tab1:
     c1, c2 = st.columns([1, 2])
     with c1:
         st.markdown("### ⚙️ Setup")
-        # Sync: Scrivendo qui, aggiorno la session_state
         sym_input = st.text_input("Ticker", st.session_state['shared_ticker'], help="Simbolo (es. SPY, QQQ, NVDA)").upper()
-        if sym_input != st.session_state['shared_ticker']:
-            st.session_state['shared_ticker'] = sym_input
-            
+        if sym_input != st.session_state['shared_ticker']: st.session_state['shared_ticker'] = sym_input
         sym = st.session_state['shared_ticker']
         spot, adv, hist = get_market_data(sym)
-        
         if spot: st.success(f"Spot: ${spot:.2f}")
-        nex = st.slider("Scadenze", 4, 12, 8, help="Num. scadenze future (filtro 45gg)")
+        
+        # EARNINGS ALERT
+        earn_alert = check_earnings_risk(sym)
+        if earn_alert: st.error(earn_alert)
+        
+        nex = st.slider("Scadenze", 4, 12, 8, help="Num. scadenze future")
         st.markdown("### 🤖 AI Market Scenario")
         rname, ridx, aiexp = suggest_market_context(hist) if hist is not None else ("Neutral", 2, "")
         if hist is not None:
@@ -425,18 +479,10 @@ with tab1:
             else: st.info(aiexp)
         opts = ["Synthetic Short (Bearish)", "Long Straddle (Volatile)", "Short Straddle (Neutral)", "Synthetic Long (Bullish)"]
         sel = st.radio("Seleziona Scenario:", opts, index=ridx)
-        if "Short (Bearish)" in sel:
-            cs, ps, sl = 1, -1, "Bearish"
-            st.markdown("""<div style='background-color:#ffebee;padding:8px;border-left:4px solid #d32f2f'><b>🐻 BEARISH:</b> Ist. Long Put. Dealer: Long Call / Short Put.</div>""", unsafe_allow_html=True)
-        elif "Long Straddle" in sel:
-            cs, ps, sl = -1, -1, "Volatile"
-            st.markdown("""<div style='background-color:#fff3e0;padding:8px;border-left:4px solid #f57c00'><b>💥 VOLATILE:</b> Ist. Long Straddle. Dealer: Short Gamma.</div>""", unsafe_allow_html=True)
-        elif "Short Straddle" in sel:
-            cs, ps, sl = 1, 1, "Neutral"
-            st.markdown("""<div style='background-color:#e8f5e9;padding:8px;border-left:4px solid #388e3c'><b>💤 NEUTRAL:</b> Ist. Short Straddle. Dealer: Long Gamma.</div>""", unsafe_allow_html=True)
-        else:
-            cs, ps, sl = -1, 1, "Bullish"
-            st.markdown("""<div style='background-color:#e3f2fd;padding:8px;border-left:4px solid #1976d2'><b>🐂 BULLISH:</b> Ist. Long Call. Dealer: Short Call / Long Put.</div>""", unsafe_allow_html=True)
+        if "Short (Bearish)" in sel: cs, ps, sl = 1, -1, "Bearish"; st.markdown("""<div style='background-color:#ffebee;padding:8px;border-left:4px solid #d32f2f'><b>🐻 BEARISH:</b> Ist. Long Put. Dealer: Long Call / Short Put.</div>""", unsafe_allow_html=True)
+        elif "Long Straddle" in sel: cs, ps, sl = -1, -1, "Volatile"; st.markdown("""<div style='background-color:#fff3e0;padding:8px;border-left:4px solid #f57c00'><b>💥 VOLATILE:</b> Ist. Long Straddle. Dealer: Short Gamma.</div>""", unsafe_allow_html=True)
+        elif "Short Straddle" in sel: cs, ps, sl = 1, 1, "Neutral"; st.markdown("""<div style='background-color:#e8f5e9;padding:8px;border-left:4px solid #388e3c'><b>💤 NEUTRAL:</b> Ist. Short Straddle. Dealer: Long Gamma.</div>""", unsafe_allow_html=True)
+        else: cs, ps, sl = -1, 1, "Bullish"; st.markdown("""<div style='background-color:#e3f2fd;padding:8px;border-left:4px solid #1976d2'><b>🐂 BULLISH:</b> Ist. Long Call. Dealer: Short Call / Long Put.</div>""", unsafe_allow_html=True)
         rng = st.slider("Range %", 10, 40, 20, help="Zoom grafico")
         st.write("🧩 Filtri Muri")
         dc = st.slider("Dist. Min. Muri CALL (%)", 0, 10, 2)
@@ -452,108 +498,60 @@ with tab1:
                     res = calculate_gex_metrics(calls, puts, spot, adv, cs, ps)
                     fig = plot_dashboard_unified(sym, res, spot, hist, nex, dc, dp, sl, aiexp)
                     st.pyplot(fig)
-                    buf = BytesIO()
-                    fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
+                    buf = BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
                     st.download_button("💾 Scarica Report", buf.getvalue(), f"GEX_{sym}.png", "image/png", use_container_width=True)
 
-# --- TAB 2: STRATEGY LAB (MOVED HERE) ---
+# --- TAB 2: STRATEGY LAB ---
 with tab2:
     st.markdown("### 🧪 Strategy Lab: Institutional Trade Architect")
-    st.write("Genera setup operativi basati su Muri GEX e Volatilità.")
-    
     ls_col1, ls_col2 = st.columns([1, 2])
-    
     with ls_col1:
-        st.markdown("#### 1. Input Trade")
-        # Sync: Legge automaticamente la session_state
         t3_sym_input = st.text_input("Ticker Strategy", st.session_state['shared_ticker'], key="strat_ticker").upper()
-        if t3_sym_input != st.session_state['shared_ticker']:
-             st.session_state['shared_ticker'] = t3_sym_input
-        
+        if t3_sym_input != st.session_state['shared_ticker']: st.session_state['shared_ticker'] = t3_sym_input
         t3_spot, t3_adv, t3_hist = get_market_data(t3_sym_input)
-        
         if t3_spot:
             t3_hist['LogRet'] = np.log(t3_hist['Close'] / t3_hist['Close'].shift(1))
             hv_current = t3_hist['LogRet'].tail(20).std() * np.sqrt(252)
+            st.metric("Spot Price", f"${t3_spot:.2f}"); st.metric("Historical Vol (HV20)", f"{hv_current:.1%}")
             
-            st.metric("Spot Price", f"${t3_spot:.2f}")
-            st.metric("Historical Vol (HV20)", f"{hv_current:.1%}")
+            # EARNINGS ALERT TAB 2
+            t3_earn = check_earnings_risk(t3_sym_input)
+            if t3_earn: st.error(t3_earn)
             
             t3_scen = suggest_market_context(t3_hist)
             st.info(f"AI Context: {t3_scen[0]}")
-            
             btn_strat = st.button("🛠️ Genera Trade Setup", type="primary")
-
     with ls_col2:
         if t3_spot and btn_strat:
             t3_calls, t3_puts, t3_err = get_aggregated_data(t3_sym_input, t3_spot, 6, 20)
-            
             if not t3_err:
                 calls_agg = t3_calls.groupby("strike")["openInterest"].sum().reset_index()
                 puts_agg = t3_puts.groupby("strike")["openInterest"].sum().reset_index()
-                
                 t3_cw = calls_agg[calls_agg['strike'] > t3_spot].sort_values("openInterest", ascending=False).iloc[0]['strike']
                 t3_pw = puts_agg[puts_agg['strike'] < t3_spot].sort_values("openInterest", ascending=False).iloc[0]['strike']
-                
                 iv_est = t3_calls[t3_calls['strike'].between(t3_spot*0.95, t3_spot*1.05)]['impliedVolatility'].mean()
                 if pd.isna(iv_est): iv_est = hv_current
-                
                 vol_regime = "HIGH VOL" if iv_est > (hv_current * 1.1) else "LOW VOL"
                 strat_type = "CREDIT (Sell Premium)" if vol_regime == "HIGH VOL" else "DEBIT (Buy Premium)"
-                
                 bias_bull = "Bull" in t3_scen[0]
-                
                 if bias_bull:
-                    entry = t3_spot
-                    stop = t3_pw * 0.99
-                    target = t3_cw * 0.99
-                    setup_title = "🐂 BULLISH SETUP"
-                    col_setup = "#e3f2fd"
+                    entry = t3_spot; stop = t3_pw * 0.99; target = t3_cw * 0.99; setup_title = "🐂 BULLISH SETUP"; col_setup = "#e3f2fd"
                 else:
-                    entry = t3_spot
-                    stop = t3_cw * 1.01
-                    target = t3_pw * 1.01
-                    setup_title = "🐻 BEARISH SETUP"
-                    col_setup = "#ffebee"
-
-                risk = abs(entry - stop)
-                reward = abs(target - entry)
-                rr_ratio = reward / risk if risk > 0 else 0
-                
-                st.markdown(f"#### 📊 Volatility Regime: {vol_regime}")
-                st.write(f"IV Est: **{iv_est:.1%}** vs HV: **{hv_current:.1%}** -> Suggerimento: **{strat_type}**")
-                
-                st.markdown("---")
-                
-                st.markdown(f"""
-                <div style="background-color: {col_setup}; padding: 15px; border-radius: 10px; border: 1px solid #ddd;">
-                    <h3 style="margin-top:0">{setup_title}</h3>
-                    <p><b>📐 ENTRY:</b> ${entry:.2f} (Spot)</p>
-                    <p><b>🛑 STOP LOSS:</b> ${stop:.2f} (Livello Muro Opzioni: ${t3_pw if bias_bull else t3_cw:.0f})</p>
-                    <p><b>🎯 TARGET:</b> ${target:.2f} (Livello Muro Opzioni: ${t3_cw if bias_bull else t3_pw:.0f})</p>
-                    <hr>
-                    <p style="font-size: 18px"><b>⚖️ Risk/Reward: 1 : {rr_ratio:.2f}</b></p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.markdown("#### 📉 Probability Cone (Target Validation)")
-                # Passiamo il target calcolato per disegnare la linea e generare la spiegazione
+                    entry = t3_spot; stop = t3_cw * 1.01; target = t3_pw * 1.01; setup_title = "🐻 BEARISH SETUP"; col_setup = "#ffebee"
+                risk = abs(entry - stop); reward = abs(target - entry); rr_ratio = reward / risk if risk > 0 else 0
+                st.markdown(f"#### 📊 Volatility Regime: {vol_regime}"); st.write(f"IV Est: **{iv_est:.1%}** vs HV: **{hv_current:.1%}** -> Suggerimento: **{strat_type}**"); st.markdown("---")
+                st.markdown(f"""<div style="background-color: {col_setup}; padding: 15px; border-radius: 10px; border: 1px solid #ddd;"><h3 style="margin-top:0">{setup_title}</h3><p><b>📐 ENTRY:</b> ${entry:.2f} (Spot)</p><p><b>🛑 STOP LOSS:</b> ${stop:.2f} (Livello Muro Opzioni: ${t3_pw if bias_bull else t3_cw:.0f})</p><p><b>🎯 TARGET:</b> ${target:.2f} (Livello Muro Opzioni: ${t3_cw if bias_bull else t3_pw:.0f})</p><hr><p style="font-size: 18px"><b>⚖️ Risk/Reward: 1 : {rr_ratio:.2f}</b></p></div>""", unsafe_allow_html=True)
                 fig_cone, txt_explanation = plot_probability_cone(t3_spot, iv_est, target, days=30)
-                st.pyplot(fig_cone)
-                st.info(txt_explanation)
-                
-            else:
-                st.error("Dati opzioni non disponibili per la strategia.")
+                st.pyplot(fig_cone); st.info(txt_explanation)
+            else: st.error("Dati opzioni non disponibili per la strategia.")
 
-# --- TAB 3: SQUEEZE SCANNER (MOVED HERE) ---
+# --- TAB 3: SQUEEZE SCANNER ---
 with tab3:
     st.markdown("### 🔥 Gamma Squeeze & Volatility Scanner")
-    st.markdown("Analisi batch per trovare: **Short Gamma** + **GPI Alto** + **Squeeze Tecnico**.")
     default_tickers = "SPY, QQQ, IWM, NVDA, TSLA, AMD, AAPL, MSFT, AMZN, META, COIN, MSTR, GME, AMC, PLTR"
     ticker_input = st.text_area("Lista Tickers (separati da virgola)", default_tickers)
     n_scan_exps = st.slider("Scadenze Scanner (Speed vs Precision)", 2, 6, 4)
     btn_scan = st.button("🔎 Avvia Scansione", type="primary")
-    
     if btn_scan:
         tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
         results = []
@@ -565,6 +563,9 @@ with tab3:
             is_sqz = calculate_technical_squeeze(hist_s)
             scen_tuple = suggest_market_context(hist_s)
             scen_name = scen_tuple[0]
+            # Warning per Earnings nello Scanner
+            warn_earn = "⚠️ EARNINGS" if check_earnings_risk(t) else ""
+            
             if "Synthetic Short" in scen_name: c_s, p_s, readable_scen = 1, -1, "BEARISH 🐻"
             elif "Long Straddle" in scen_name: c_s, p_s, readable_scen = -1, -1, "VOLATILE 💥"
             elif "Short Straddle" in scen_name: c_s, p_s, readable_scen = 1, 1, "NEUTRAL 💤"
@@ -577,7 +578,7 @@ with tab3:
                 score = gpi_val
                 if regime == "SHORT GAMMA": score += 20
                 if is_sqz: score += 15
-                results.append({"Ticker": t, "Price": spot_s, "Regime": regime, "GPI %": round(gpi_val, 1), "BB Squeeze": "✅ YES" if is_sqz else "No", "AI Scenario": readable_scen, "ScoreVal": score})
+                results.append({"Ticker": t, "Price": spot_s, "Regime": regime, "GPI %": round(gpi_val, 1), "BB Squeeze": "✅ YES" if is_sqz else "No", "AI Scenario": readable_scen, "Risk": warn_earn, "ScoreVal": score})
             time.sleep(0.1)
         bar.empty()
         if results:
