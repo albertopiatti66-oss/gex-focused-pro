@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.24 (Final Polish)
-- FIX: Legenda Scanner ora include la categoria "MEDIO" (10-25).
-- UX: Sincronizzazione Ticker tra Tab 1 e Tab 2 verificata e attiva.
-- LOGIC: Median Volume Obstacle Check (v23) mantenuto.
+GEX Positioning v20.9.25 (Badges Update)
+- NEW: Badge "Relative Strength" (RS) vs SPY.
+- NEW: Badge "Expiry Risk" (% Gamma in scadenza venerdì).
+- LOGIC: Motore matematico e Obstacle Check (Median) invariati.
 """
 
 import streamlit as st
@@ -22,9 +22,9 @@ import textwrap
 import time
 
 # Configurazione pagina
-st.set_page_config(page_title="GEX Positioning V.20.9.24", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="GEX Positioning V.20.9.25", layout="wide", page_icon="⚡")
 
-# Inizializzazione Session State (Memoria Condivisa)
+# Inizializzazione Session State
 if 'shared_ticker' not in st.session_state:
     st.session_state['shared_ticker'] = "NVDA"
 
@@ -63,43 +63,28 @@ def check_earnings_risk(ticker):
     except: return None
 
 def check_volume_obstacle(hist, entry, target):
-    """
-    Analizza il Volume Profile usando la MEDIANA (Robust Obstacle Check).
-    """
+    """Analizza il Volume Profile usando la MEDIANA (Robust Obstacle Check)."""
     try:
         recent = hist.tail(90)
         price_data = recent['Close']
         vol_data = recent['Volume']
-        
-        lower = min(entry, target)
-        upper = max(entry, target)
-        
+        lower = min(entry, target); upper = max(entry, target)
         full_counts, full_bins = np.histogram(price_data, bins=70, weights=vol_data)
-        
         valid_counts = full_counts[full_counts > 0]
         if len(valid_counts) == 0: return False, None
-        
         baseline_median = np.median(valid_counts)
         threshold = baseline_median * 2.5
-        
         bin_centers = 0.5 * (full_bins[:-1] + full_bins[1:])
         mask = (bin_centers >= lower) & (bin_centers <= upper)
-        path_counts = full_counts[mask]
-        path_prices = bin_centers[mask]
-        
+        path_counts = full_counts[mask]; path_prices = bin_centers[mask]
         if len(path_counts) == 0: return False, None
-        
         max_vol_path_idx = np.argmax(path_counts)
         max_vol_path = path_counts[max_vol_path_idx]
         obstacle_price = path_prices[max_vol_path_idx]
-        
         if max_vol_path > threshold:
-            if abs(obstacle_price - entry) > (entry * 0.01):
-                return True, obstacle_price
-                
+            if abs(obstacle_price - entry) > (entry * 0.01): return True, obstacle_price
         return False, None
-    except:
-        return False, None
+    except: return False, None
 
 def calculate_technical_squeeze(hist):
     try:
@@ -226,66 +211,94 @@ def find_zero_crossing(df, spot):
     except: return None
 
 # -----------------------------------------------------------------------------
-# 2. VISUAL & REPORT (TAB 1)
+# 2. NUOVE FUNZIONI BADGES (RS & EXPIRY)
+# -----------------------------------------------------------------------------
+
+def get_rs_badge(ticker):
+    """Calcola la Forza Relativa (RS) vs SPY."""
+    try:
+        if ticker == "SPY": return ""
+        df = yf.download([ticker, "SPY"], period="10d", progress=False)['Close']
+        if df.empty: return ""
+        
+        # Gestione Multi-Index se scarica entrambi
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(0) # Appiattisci se necessario (dipende versione yfinance)
+            
+        # Calcolo Performance
+        # Nota: yfinance a volte cambia format, usiamo il metodo più sicuro: pct_change
+        perf_ticker = (df[ticker].iloc[-1] - df[ticker].iloc[0]) / df[ticker].iloc[0]
+        perf_spy = (df["SPY"].iloc[-1] - df["SPY"].iloc[0]) / df["SPY"].iloc[0]
+        
+        rs = perf_ticker - perf_spy
+        
+        if rs > 0.01: # +1% vs SPY
+            return f"<span style='background-color:#E8F5E9; color:#2E8B57; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #2E8B57; font-size:12px;'>🚀 LEADER (RS +{rs*100:.1f}%)</span>"
+        elif rs < -0.01: # -1% vs SPY
+            return f"<span style='background-color:#FFEBEE; color:#C0392B; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #C0392B; font-size:12px;'>🐢 LAGGARD (RS {rs*100:.1f}%)</span>"
+        else:
+            return f"<span style='background-color:#F5F5F5; color:#555; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #CCC; font-size:12px;'>⚖️ IN LINE (RS {rs*100:.1f}%)</span>"
+    except:
+        return ""
+
+def get_expiry_badge(calls, puts, total_gex):
+    """Calcola quanto Gamma scade entro questo Venerdì."""
+    try:
+        today = datetime.now().date()
+        # Trova prossimo venerdì
+        days_ahead = 4 - today.weekday()
+        if days_ahead < 0: days_ahead += 7
+        next_friday = today + timedelta(days=days_ahead)
+        next_friday_str = next_friday.strftime('%Y-%m-%d')
+        
+        # Filtra GEX in scadenza
+        c_exp = calls[calls['expiry'] <= next_friday_str]['GEX'].abs().sum()
+        p_exp = puts[puts['expiry'] <= next_friday_str]['GEX'].abs().sum()
+        
+        expiring_gex = c_exp + p_exp
+        total_abs_gex = calls['GEX'].abs().sum() + puts['GEX'].abs().sum()
+        
+        if total_abs_gex == 0: return ""
+        
+        ratio = expiring_gex / total_abs_gex
+        
+        if ratio > 0.35: # >35% scade questa settimana
+            return f"<span style='background-color:#FFF3E0; color:#EF6C00; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #EF6C00; font-size:12px;'>⚠️ EXPIRY RISK: {ratio:.0%} scade Ven.</span>"
+        else:
+            return f"<span style='background-color:#E3F2FD; color:#1565C0; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #1565C0; font-size:12px;'>🔒 SOLID: Solo {ratio:.0%} scade Ven.</span>"
+    except:
+        return ""
+
+# -----------------------------------------------------------------------------
+# 3. FUNZIONI GRAFICHE & REPORT
 # -----------------------------------------------------------------------------
 
 def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name):
-    tot_gex = data['total_gex']
-    gpi = data['gpi']
+    tot_gex = data['total_gex']; gpi = data['gpi']
     regime_status = "LONG GAMMA (Stabile)" if tot_gex > 0 else "SHORT GAMMA (Instabile)"
     regime_color = "#2E8B57" if tot_gex > 0 else "#C0392B"
-    gpi_txt = f"{gpi:.1f}%"
-    gpi_desc = "Basso"
-    if gpi > 3.0: gpi_desc = "MEDIO"
+    gpi_txt = f"{gpi:.1f}%"; gpi_desc = "Basso"
+    if gpi > 3.0: gpi_desc = "MEDIO"; 
     if gpi > 8.0: gpi_desc = "ALTO"
     if gpi > 15.0: gpi_desc = "ESTREMO"
-    
-    if synced_flip:
-        cond = "SOPRA" if spot > synced_flip else "SOTTO"
-        flip_desc = f"Spot {cond} il Flip ({synced_flip:.0f})"
+    if synced_flip: cond = "SOPRA" if spot > synced_flip else "SOTTO"; flip_desc = f"Spot {cond} il Flip ({synced_flip:.0f})"
     else: flip_desc = "Flip indefinito"
-    
     safe_zone = True if synced_flip and spot > synced_flip else False
-    
     if tot_gex > 0:
-        if gpi > 10:
-            scommessa = "🛡️ POSITIONING: PINNING"
-            dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer bloccano il prezzo."
-        else:
-            scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"
-            dettaglio = f"Long Gamma classico. GPI contenuto ({gpi_txt}). Mercato ammortizzato."
+        if gpi > 10: scommessa = "🛡️ POSITIONING: PINNING"; dettaglio = f"Long Gamma con GPI alto ({gpi_txt}). Dealer bloccano il prezzo."
+        else: scommessa = "🛡️ POSITIONING: STABILIZZAZIONE"; dettaglio = f"Long Gamma classico. GPI contenuto ({gpi_txt}). Mercato ammortizzato."
         bordino = "#2E8B57"
     elif tot_gex < 0:
-        if gpi > 8.0:
-            scommessa = "🔥 POSITIONING: SQUEEZE / CRASH"
-            dettaglio = f"ALLARME: Short Gamma + GPI Alto ({gpi_txt}). Rischio esplosione volatilità."
-            bordino = "#8B0000"
-        else:
-            scommessa = "🔥 POSITIONING: ACCELERAZIONE"
-            dettaglio = f"Short Gamma attivo. Mancano freni. Possibili trend veloci."
-            bordino = "#C0392B"
-    elif safe_zone and tot_gex < 0:
-        scommessa = "⚠️ POSITIONING: FRAGILE"
-        dettaglio = "Sopra Flip ma Gamma negativo. Salita fragile."
-        bordino = "#E67E22"
-    else:
-        scommessa = "⚠️ POSITIONING: NEUTRALE"
-        dettaglio = "Configurazione mista."
-        bordino = "grey"
-        
-    cw_txt = f"{int(cw_val)}" if cw_val else "-"
-    pw_txt = f"{int(pw_val)}" if pw_val else "-"
+        if gpi > 8.0: scommessa = "🔥 POSITIONING: SQUEEZE / CRASH"; dettaglio = f"ALLARME: Short Gamma + GPI Alto ({gpi_txt}). Rischio esplosione volatilità."; bordino = "#8B0000"
+        else: scommessa = "🔥 POSITIONING: ACCELERAZIONE"; dettaglio = f"Short Gamma attivo. Mancano freni. Possibili trend veloci."; bordino = "#C0392B"
+    elif safe_zone and tot_gex < 0: scommessa = "⚠️ POSITIONING: FRAGILE"; dettaglio = "Sopra Flip ma Gamma negativo. Salita fragile."; bordino = "#E67E22"
+    else: scommessa = "⚠️ POSITIONING: NEUTRALE"; dettaglio = "Configurazione mista."; bordino = "grey"
+    cw_txt = f"{int(cw_val)}" if cw_val else "-"; pw_txt = f"{int(pw_val)}" if pw_val else "-"
     nb = data['net_gamma_bias']
     if nb > 5: bias = f"Call (+{nb:.0f}%)"
     elif nb < -5: bias = f"Put ({nb:.0f}%)"
     else: bias = "Neutrale"
-    
-    return {
-        "spot": spot, "regime": regime_status, "regime_color": regime_color,
-        "bias": bias, "flip_desc": flip_desc, "cw": cw_txt, "pw": pw_txt,
-        "gpi": gpi_txt, "gpi_desc": gpi_desc, "scommessa": scommessa,
-        "dettaglio": dettaglio, "bordino": bordino, "scenario_name": scenario_name
-    }
+    return { "spot": spot, "regime": regime_status, "regime_color": regime_color, "bias": bias, "flip_desc": flip_desc, "cw": cw_txt, "pw": pw_txt, "gpi": gpi_txt, "gpi_desc": gpi_desc, "scommessa": scommessa, "dettaglio": dettaglio, "bordino": bordino, "scenario_name": scenario_name }
 
 def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, dist_min_put_pct, scenario_name, ai_explanation):
     calls, puts = data["calls"], data["puts"]
@@ -312,20 +325,13 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     best_cw = calls_agg[calls_agg['strike'].isin(cw_cands)].sort_values("WallScore", ascending=False).iloc[0]["strike"] if cw_cands else None
     best_pw = puts_agg[puts_agg['strike'].isin(pw_cands)].sort_values("WallScore", ascending=False).iloc[0]["strike"] if pw_cands else None
     rep = get_analysis_content(spot, data, best_cw, best_pw, final_flip, scenario_name)
-    
-    fig = plt.figure(figsize=(13, 12))
-    gs = gridspec.GridSpec(3, 1, height_ratios=[1.8, 2.0, 1.0], hspace=0.25)
-    
+    fig = plt.figure(figsize=(13, 12)); gs = gridspec.GridSpec(3, 1, height_ratios=[1.8, 2.0, 1.0], hspace=0.25)
     ax_p = fig.add_subplot(gs[0])
-    price_hist = hist['Close']; vol_hist = hist['Volume']
-    vp_bins = 50
+    price_hist = hist['Close']; vol_hist = hist['Volume']; vp_bins = 50
     counts, bins = np.histogram(price_hist, bins=vp_bins, weights=vol_hist)
-    df_plot = hist.tail(80).copy()
-    df_plot.reset_index(drop=True, inplace=True)
-    max_vol = counts.max()
-    scale_factor = (len(df_plot) * 0.3) / max_vol if max_vol > 0 else 0
+    df_plot = hist.tail(80).copy(); df_plot.reset_index(drop=True, inplace=True)
+    max_vol = counts.max(); scale_factor = (len(df_plot) * 0.3) / max_vol if max_vol > 0 else 0
     for i in range(len(counts)): ax_p.barh(bins[i], counts[i] * scale_factor, height=(bins[i+1]-bins[i]), left=0, color='#D3D3D3', alpha=0.4, zorder=0)
-
     if 'SMA20' not in df_plot.columns: df_plot['SMA20'] = df_plot['Close'].rolling(20).mean()
     if 'SMA50' not in df_plot.columns: df_plot['SMA50'] = df_plot['Close'].rolling(50).mean()
     up = df_plot[df_plot.Close >= df_plot.Open]; down = df_plot[df_plot.Close < df_plot.Open]
@@ -338,48 +344,24 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     ax_p.plot(df_plot.index, df_plot['SMA20'], color='#2979FF', lw=1.5, label='SMA 20', zorder=3)
     ax_p.plot(df_plot.index, df_plot['SMA50'], color='#FF1744', lw=1.5, label='SMA 50', zorder=3)
     right_idx = df_plot.index[-1] + 1
-    if best_cw:
-        ax_p.axhline(best_cw, color='#21618C', linestyle='--', linewidth=1.2, alpha=0.8, zorder=4)
-        ax_p.text(right_idx, best_cw, f" Call Wall ${int(best_cw)} ", color='white', fontsize=8, fontweight='bold', va='center', ha='left', bbox=dict(boxstyle="square,pad=0.2", fc="#21618C", ec="none"), zorder=10)
-    if best_pw:
-        ax_p.axhline(best_pw, color='#D35400', linestyle='--', linewidth=1.2, alpha=0.8, zorder=4)
-        ax_p.text(right_idx, best_pw, f" Put Wall ${int(best_pw)} ", color='white', fontsize=8, fontweight='bold', va='center', ha='left', bbox=dict(boxstyle="square,pad=0.2", fc="#D35400", ec="none"), zorder=10)
-    ax_p.set_title(f"{symbol} Trend + Volume Profile (Gray) + Option Walls", fontsize=11, fontweight='bold', color='#444')
-    ax_p.legend(loc='upper left', fontsize=8); ax_p.grid(True, alpha=0.2); ax_p.set_xlim(-1, len(df_plot) + 6); ax_p.set_xticks([])
-
-    ax = fig.add_subplot(gs[1])
-    bar_width = spot * 0.007
-    x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min())
-    x_max = max(calls_agg["strike"].max(), puts_agg["strike"].max())
+    if best_cw: ax_p.axhline(best_cw, color='#21618C', linestyle='--', linewidth=1.2, alpha=0.8, zorder=4); ax_p.text(right_idx, best_cw, f" Call Wall ${int(best_cw)} ", color='white', fontsize=8, fontweight='bold', va='center', ha='left', bbox=dict(boxstyle="square,pad=0.2", fc="#21618C", ec="none"), zorder=10)
+    if best_pw: ax_p.axhline(best_pw, color='#D35400', linestyle='--', linewidth=1.2, alpha=0.8, zorder=4); ax_p.text(right_idx, best_pw, f" Put Wall ${int(best_pw)} ", color='white', fontsize=8, fontweight='bold', va='center', ha='left', bbox=dict(boxstyle="square,pad=0.2", fc="#D35400", ec="none"), zorder=10)
+    ax_p.set_title(f"{symbol} Trend + Volume Profile (Gray) + Option Walls", fontsize=11, fontweight='bold', color='#444'); ax_p.legend(loc='upper left', fontsize=8); ax_p.grid(True, alpha=0.2); ax_p.set_xlim(-1, len(df_plot) + 6); ax_p.set_xticks([])
+    ax = fig.add_subplot(gs[1]); bar_width = spot * 0.007; x_min = min(calls_agg["strike"].min(), puts_agg["strike"].min()); x_max = max(calls_agg["strike"].max(), puts_agg["strike"].max())
     if final_flip:
         if data['total_gex'] > 0: ax.axvspan(final_flip, x_max, facecolor='#E8F5E9', alpha=0.45, zorder=0) 
         else: ax.axvspan(x_min, final_flip, facecolor='#FFEBEE', alpha=0.45, zorder=0) 
     ax.bar(puts_agg["strike"], -puts_agg["openInterest"], color="#DEB887", alpha=0.35, width=bar_width, label="Put OI", zorder=2)
     ax.bar(calls_agg["strike"], calls_agg["openInterest"], color="#4682B4", alpha=0.35, width=bar_width, label="Call OI", zorder=2)
-    for w in cw_cands:
-        val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#21618C", alpha=1.0 if w == best_cw else 0.6, width=bar_width, zorder=3)
-    for w in pw_cands:
-        val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
-        ax.bar(w, val, color="#D35400", alpha=1.0 if w == best_pw else 0.6, width=bar_width, zorder=3)
-    ax2 = ax.twinx()
-    gex_clean = gex_strike.dropna().sort_values("strike")
-    ax2.plot(gex_clean["strike"], gex_clean["GEX"], color='#999999', ls=':', lw=2, label="Net GEX", zorder=5)
-    ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot", zorder=6)
+    for w in cw_cands: val = calls_agg[calls_agg['strike']==w]['openInterest'].sum(); ax.bar(w, val, color="#21618C", alpha=1.0 if w == best_cw else 0.6, width=bar_width, zorder=3)
+    for w in pw_cands: val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum(); ax.bar(w, val, color="#D35400", alpha=1.0 if w == best_pw else 0.6, width=bar_width, zorder=3)
+    ax2 = ax.twinx(); gex_clean = gex_strike.dropna().sort_values("strike"); ax2.plot(gex_clean["strike"], gex_clean["GEX"], color='#999999', ls=':', lw=2, label="Net GEX", zorder=5)
+    ax.axvline(spot, color="#2980B9", ls="--", lw=1.0, label="Spot", zorder=6); 
     if final_flip: ax.axvline(final_flip, color="red", ls="-.", lw=2.0, label="Flip", zorder=6)
-    max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100
-    yo = max_y * 0.03
-    bbox = dict(boxstyle="round,pad=0.2", fc="white", ec="#D5D8DC", alpha=0.95)
-    for w in cw_cands:
-        val = calls_agg[calls_agg['strike']==w]['openInterest'].sum()
-        fw = 'bold' if w == best_cw else 'normal'
-        ax.text(w, val + yo, f"RES {int(w)}", color="#21618C", fontsize=8, fontweight=fw, ha='center', va='bottom', bbox=bbox, zorder=20)
-    for w in pw_cands:
-        val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum()
-        fw = 'bold' if w == best_pw else 'normal'
-        ax.text(w, val - yo, f"SUP {int(w)}", color="#D35400", fontsize=8, fontweight=fw, ha='center', va='top', bbox=bbox, zorder=20)
+    max_y = calls_agg["openInterest"].max() if not calls_agg.empty else 100; yo = max_y * 0.03; bbox = dict(boxstyle="round,pad=0.2", fc="white", ec="#D5D8DC", alpha=0.95)
+    for w in cw_cands: val = calls_agg[calls_agg['strike']==w]['openInterest'].sum(); fw = 'bold' if w == best_cw else 'normal'; ax.text(w, val + yo, f"RES {int(w)}", color="#21618C", fontsize=8, fontweight=fw, ha='center', va='bottom', bbox=bbox, zorder=20)
+    for w in pw_cands: val = -puts_agg[puts_agg['strike']==w]['openInterest'].sum(); fw = 'bold' if w == best_pw else 'normal'; ax.text(w, val - yo, f"SUP {int(w)}", color="#D35400", fontsize=8, fontweight=fw, ha='center', va='top', bbox=bbox, zorder=20)
     ax.set_ylabel("OI", fontsize=10, fontweight='bold', color="#777"); ax2.set_ylabel("GEX", fontsize=10, color="#777"); ax2.axhline(0, color="#BDC3C7", lw=0.5, ls='-'); ax.legend(loc='upper left', fontsize=9); ax.set_title(f"Options Positioning (Next {n_exps} Exps)", fontsize=11, fontweight='bold', color="#444")
-
     axr = fig.add_subplot(gs[2]); axr.axis("off")
     axr.text(0.02, 0.90, f"SPOT: {rep['spot']:.2f}", fontsize=11, fontweight='bold', color="#333", transform=axr.transAxes)
     axr.text(0.20, 0.90, "|", fontsize=11, color="#BDC3C7", transform=axr.transAxes)
@@ -390,51 +372,24 @@ def plot_dashboard_unified(symbol, data, spot, hist, n_exps, dist_min_call_pct, 
     axr.text(0.35, 0.76, f"RES: {rep['cw']}", fontsize=10, fontweight='bold', color="#21618C", transform=axr.transAxes)
     axr.text(0.50, 0.76, "|", fontsize=10, color="#BDC3C7", transform=axr.transAxes)
     axr.text(0.52, 0.76, f"SUP: {rep['pw']}", fontsize=10, fontweight='bold', color="#D35400", transform=axr.transAxes)
-    axr.text(0.02, 0.62, "SCENARIO IST.:", fontsize=10, color="#555", transform=axr.transAxes)
-    axr.text(0.18, 0.62, f"{rep['scenario_name']}", fontsize=10, fontweight='bold', color="#2C3E50", transform=axr.transAxes)
-    gc = "#333" if "Basso" in rep['gpi_desc'] else "#C0392B"
-    axr.text(0.02, 0.48, "GPI (Pressure):", fontsize=10, color="#555", transform=axr.transAxes)
-    axr.text(0.18, 0.48, f"{rep['gpi']} ({rep['gpi_desc']})", fontsize=10, fontweight='bold', color=gc, transform=axr.transAxes)
-    axr.text(0.98, 0.48, f"Report: {datetime.now().strftime('%d/%m %H:%M')}", fontsize=9, color="#888", fontstyle='italic', ha='right', transform=axr.transAxes)
-    bx, by, bw, bh = 0.02, 0.02, 0.96, 0.42
-    rect = patches.FancyBboxPatch((bx, by), bw, bh, boxstyle="round,pad=0.03", ec="#DDD", fc="white", transform=axr.transAxes, zorder=1)
-    axr.add_patch(rect)
-    axr.add_patch(patches.Rectangle((bx, by), 0.01, bh, fc=rep['bordino'], ec="none", transform=axr.transAxes, zorder=2))
-    fulld = rep['dettaglio'] + "\n" + ai_explanation
-    axr.text(bx+0.035, by+0.30, rep['scommessa'], fontsize=12, fontweight='bold', color="#2C3E50", transform=axr.transAxes)
-    axr.text(bx+0.035, by+0.18, textwrap.fill(fulld, 110), fontsize=9, color="#444", va='top', transform=axr.transAxes)
-    plt.tight_layout()
-    return fig
-
-# -----------------------------------------------------------------------------
-# 3. FUNCTIONS FOR TABS 2 & 3
-# -----------------------------------------------------------------------------
+    axr.text(0.02, 0.62, "SCENARIO IST.:", fontsize=10, color="#555", transform=axr.transAxes); axr.text(0.18, 0.62, f"{rep['scenario_name']}", fontsize=10, fontweight='bold', color="#2C3E50", transform=axr.transAxes)
+    gc = "#333" if "Basso" in rep['gpi_desc'] else "#C0392B"; axr.text(0.02, 0.48, "GPI (Pressure):", fontsize=10, color="#555", transform=axr.transAxes); axr.text(0.18, 0.48, f"{rep['gpi']} ({rep['gpi_desc']})", fontsize=10, fontweight='bold', color=gc, transform=axr.transAxes); axr.text(0.98, 0.48, f"Report: {datetime.now().strftime('%d/%m %H:%M')}", fontsize=9, color="#888", fontstyle='italic', ha='right', transform=axr.transAxes)
+    bx, by, bw, bh = 0.02, 0.02, 0.96, 0.42; rect = patches.FancyBboxPatch((bx, by), bw, bh, boxstyle="round,pad=0.03", ec="#DDD", fc="white", transform=axr.transAxes, zorder=1); axr.add_patch(rect); axr.add_patch(patches.Rectangle((bx, by), 0.01, bh, fc=rep['bordino'], ec="none", transform=axr.transAxes, zorder=2))
+    fulld = rep['dettaglio'] + "\n" + ai_explanation; axr.text(bx+0.035, by+0.30, rep['scommessa'], fontsize=12, fontweight='bold', color="#2C3E50", transform=axr.transAxes); axr.text(bx+0.035, by+0.18, textwrap.fill(fulld, 110), fontsize=9, color="#444", va='top', transform=axr.transAxes)
+    plt.tight_layout(); return fig
 
 def plot_probability_cone(spot, iv, target_price, days=30):
-    t_vals = np.arange(1, days + 1)
-    sigma = iv
-    upper1 = spot * np.exp(sigma * np.sqrt(t_vals / 365.0))
-    lower1 = spot * np.exp(-sigma * np.sqrt(t_vals / 365.0))
-    upper2 = spot * np.exp(2 * sigma * np.sqrt(t_vals / 365.0))
-    lower2 = spot * np.exp(-2 * sigma * np.sqrt(t_vals / 365.0))
+    t_vals = np.arange(1, days + 1); sigma = iv
+    upper1 = spot * np.exp(sigma * np.sqrt(t_vals / 365.0)); lower1 = spot * np.exp(-sigma * np.sqrt(t_vals / 365.0))
+    upper2 = spot * np.exp(2 * sigma * np.sqrt(t_vals / 365.0)); lower2 = spot * np.exp(-2 * sigma * np.sqrt(t_vals / 365.0))
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(t_vals, upper1, color='green', linestyle='--', alpha=0.7, label='1 SD (68%)')
-    ax.plot(t_vals, lower1, color='green', linestyle='--', alpha=0.7)
-    ax.plot(t_vals, upper2, color='orange', linestyle=':', alpha=0.6, label='2 SD (95%)')
-    ax.plot(t_vals, lower2, color='orange', linestyle=':', alpha=0.6)
-    ax.fill_between(t_vals, lower1, upper1, color='green', alpha=0.1)
-    ax.fill_between(t_vals, lower2, upper2, color='orange', alpha=0.05)
-    ax.axhline(spot, color='blue', alpha=0.5, label='Spot Price')
-    ax.axhline(target_price, color='purple', linestyle='-.', linewidth=2, label=f'Target: ${target_price:.2f}')
-    ax.set_title(f"Probability Cone (IV: {iv:.1%}) - Next {days} Days")
-    ax.set_xlabel("Days Forward")
-    ax.set_ylabel("Price")
-    ax.legend(loc='upper left')
-    final_1sd_up = upper1[-1]; final_1sd_low = lower1[-1]
-    final_2sd_up = upper2[-1]; final_2sd_low = lower2[-1]
-    explanation = ""
-    is_inside_1sd = final_1sd_low <= target_price <= final_1sd_up
-    is_inside_2sd = final_2sd_low <= target_price <= final_2sd_up
+    ax.plot(t_vals, upper1, color='green', linestyle='--', alpha=0.7, label='1 SD (68%)'); ax.plot(t_vals, lower1, color='green', linestyle='--', alpha=0.7)
+    ax.plot(t_vals, upper2, color='orange', linestyle=':', alpha=0.6, label='2 SD (95%)'); ax.plot(t_vals, lower2, color='orange', linestyle=':', alpha=0.6)
+    ax.fill_between(t_vals, lower1, upper1, color='green', alpha=0.1); ax.fill_between(t_vals, lower2, upper2, color='orange', alpha=0.05)
+    ax.axhline(spot, color='blue', alpha=0.5, label='Spot Price'); ax.axhline(target_price, color='purple', linestyle='-.', linewidth=2, label=f'Target: ${target_price:.2f}')
+    ax.set_title(f"Probability Cone (IV: {iv:.1%}) - Next {days} Days"); ax.set_xlabel("Days Forward"); ax.set_ylabel("Price"); ax.legend(loc='upper left')
+    final_1sd_up = upper1[-1]; final_1sd_low = lower1[-1]; final_2sd_up = upper2[-1]; final_2sd_low = lower2[-1]
+    is_inside_1sd = final_1sd_low <= target_price <= final_1sd_up; is_inside_2sd = final_2sd_low <= target_price <= final_2sd_up
     if is_inside_1sd: explanation = "✅ **TARGET AD ALTA PROBABILITÀ:** Il livello rientra nella prima deviazione standard (68%). È statisticamente molto probabile che venga toccato."
     elif is_inside_2sd: explanation = "⚖️ **TARGET MEDIO/ALTO:** Il livello è nella zona tra 1 e 2 SD. Richiede un movimento deciso ma non impossibile (Probabilità < 30%)."
     else: explanation = "⚠️ **TARGET AMBIZIOSO / IMPROBABILE:** Il livello è oltre le 2 Deviazioni Standard (zona estrema). La probabilità statistica è inferiore al 5%."
@@ -444,7 +399,7 @@ def plot_probability_cone(spot, iv, target_price, days=30):
 # 4. UI PRINCIPALE
 # -----------------------------------------------------------------------------
 
-st.title("⚡ GEX Positioning Suite v.20 ")
+st.title("⚡ GEX Positioning v20.9.25 (Badges Update)")
 tab1, tab2, tab3 = st.tabs(["📊 Analisi Singola", "🧪 Strategy Lab", "🔥 Squeeze Scanner"])
 
 # --- TAB 1: ANALISI SINGOLA ---
@@ -453,14 +408,18 @@ with tab1:
     with c1:
         st.markdown("### ⚙️ Setup")
         sym_input = st.text_input("Ticker", st.session_state['shared_ticker'], key="tab1_ticker").upper()
-        if sym_input != st.session_state['shared_ticker']:
-            st.session_state['shared_ticker'] = sym_input
-            
+        if sym_input != st.session_state['shared_ticker']: st.session_state['shared_ticker'] = sym_input
         sym = st.session_state['shared_ticker']
         spot, adv, hist = get_market_data(sym)
         if spot: st.success(f"Spot: ${spot:.2f}")
-        earn_alert = check_earnings_risk(sym)
+        earn_alert = check_earnings_risk(sym); 
         if earn_alert: st.error(earn_alert)
+        
+        # BADGE RS (TAB 1)
+        if spot:
+            rs_html = get_rs_badge(sym)
+            if rs_html: st.markdown(rs_html, unsafe_allow_html=True)
+            
         nex = st.slider("Scadenze", 4, 12, 8, help="Num. scadenze future")
         st.markdown("### 🤖 AI Market Scenario")
         rname, ridx, aiexp = suggest_market_context(hist) if hist is not None else ("Neutral", 2, "")
@@ -485,6 +444,10 @@ with tab1:
             else:
                 with st.spinner("Processing..."):
                     res = calculate_gex_metrics(calls, puts, spot, adv, cs, ps)
+                    # BADGE EXPIRY (TAB 1 - Calcolato dopo GEX)
+                    exp_html = get_expiry_badge(calls, puts, res['total_gex'])
+                    if exp_html: st.markdown(exp_html, unsafe_allow_html=True)
+                    
                     fig = plot_dashboard_unified(sym, res, spot, hist, nex, dc, dp, sl, aiexp)
                     st.pyplot(fig)
                     buf = BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
@@ -496,14 +459,17 @@ with tab2:
     ls_col1, ls_col2 = st.columns([1, 2])
     with ls_col1:
         t3_sym_input = st.text_input("Ticker Strategy", st.session_state['shared_ticker'], key="tab2_ticker").upper()
-        if t3_sym_input != st.session_state['shared_ticker']:
-            st.session_state['shared_ticker'] = t3_sym_input
-            
+        if t3_sym_input != st.session_state['shared_ticker']: st.session_state['shared_ticker'] = t3_sym_input
         t3_spot, t3_adv, t3_hist = get_market_data(t3_sym_input)
         if t3_spot:
             t3_hist['LogRet'] = np.log(t3_hist['Close'] / t3_hist['Close'].shift(1))
             hv_current = t3_hist['LogRet'].tail(20).std() * np.sqrt(252)
             st.metric("Spot Price", f"${t3_spot:.2f}"); st.metric("Historical Vol (HV20)", f"{hv_current:.1%}")
+            
+            # BADGE RS (TAB 2)
+            rs_html_t2 = get_rs_badge(t3_sym_input)
+            if rs_html_t2: st.markdown(rs_html_t2, unsafe_allow_html=True)
+            
             t3_earn = check_earnings_risk(t3_sym_input)
             if t3_earn: st.error(t3_earn)
             t3_scen = suggest_market_context(t3_hist)
@@ -526,13 +492,9 @@ with tab2:
                     entry = t3_spot; stop = t3_pw * 0.99; target = t3_cw * 0.99; setup_title = "🐂 BULLISH SETUP"; col_setup = "#e3f2fd"
                 else:
                     entry = t3_spot; stop = t3_cw * 1.01; target = t3_pw * 1.01; setup_title = "🐻 BEARISH SETUP"; col_setup = "#ffebee"
-                
-                # OBSTACLE CHECK LOGIC (MEDIAN)
                 is_obstacle, obst_price = check_volume_obstacle(t3_hist, entry, target)
                 obstacle_msg = ""
-                if is_obstacle:
-                    obstacle_msg = f"""<br><div style='background-color:#FFCCBC; color:#D84315; padding:8px; border-radius:5px;'><b>🚧 OBSTACLE ALERT:</b> Muro di Volume rilevato a <b>${obst_price:.2f}</b>. <br>Il prezzo potrebbe rimbalzare qui prima di raggiungere il target GEX. Considera Take Profit anticipato.</div>"""
-
+                if is_obstacle: obstacle_msg = f"""<br><div style='background-color:#FFCCBC; color:#D84315; padding:8px; border-radius:5px;'><b>🚧 OBSTACLE ALERT:</b> Muro di Volume rilevato a <b>${obst_price:.2f}</b>. <br>Il prezzo potrebbe rimbalzare qui prima di raggiungere il target GEX. Considera Take Profit anticipato.</div>"""
                 risk = abs(entry - stop); reward = abs(target - entry); rr_ratio = reward / risk if risk > 0 else 0
                 st.markdown(f"#### 📊 Volatility Regime: {vol_regime}"); st.write(f"IV Est: **{iv_est:.1%}** vs HV: **{hv_current:.1%}** -> Suggerimento: **{strat_type}**"); st.markdown("---")
                 st.markdown(f"""<div style="background-color: {col_setup}; padding: 15px; border-radius: 10px; border: 1px solid #ddd;"><h3 style="margin-top:0">{setup_title}</h3><p><b>📐 ENTRY:</b> ${entry:.2f} (Spot)</p><p><b>🛑 STOP LOSS:</b> ${stop:.2f} (Livello Muro Opzioni: ${t3_pw if bias_bull else t3_cw:.0f})</p><p><b>🎯 TARGET:</b> ${target:.2f} (Livello Muro Opzioni: ${t3_cw if bias_bull else t3_pw:.0f})</p>{obstacle_msg}<hr><p style="font-size: 18px"><b>⚖️ Risk/Reward: 1 : {rr_ratio:.2f}</b></p></div>""", unsafe_allow_html=True)
@@ -543,7 +505,7 @@ with tab2:
 # --- TAB 3: SQUEEZE SCANNER ---
 with tab3:
     st.markdown("### 🔥 Gamma Squeeze & Volatility Scanner")
-    default_tickers = "SPY, QQQ, NVDA, TSLA, AMD, AAPL, MSFT, AMZN, META, COIN, MSTR, AMC, PLTR"
+    default_tickers = "SPY, QQQ, IWM, NVDA, TSLA, AMD, AAPL, MSFT, AMZN, META, COIN, MSTR, GME, AMC, PLTR"
     ticker_input = st.text_area("Lista Tickers (separati da virgola)", default_tickers)
     n_scan_exps = st.slider("Scadenze Scanner (Speed vs Precision)", 2, 6, 4)
     btn_scan = st.button("🔎 Avvia Scansione", type="primary")
