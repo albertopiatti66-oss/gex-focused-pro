@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.25 (Final Option Architect - Real P&L & Cone)
-- TAB 1: Dashboard GEX (Invariata).
-- TAB 2: Option Architect (UPDATED: Real $ P&L, Max Profit Calc, Probability Cone).
-- TAB 3: Squeeze Scanner (Invariata).
+GEX Positioning v20.9.25 (Final Full Version)
+- TAB 1: Dashboard GEX (Analisi Muri e Gamma Flip).
+- TAB 2: Option Architect (Fixed: Real P&L, Direction Badges, Smart Targets).
+- TAB 3: Squeeze Scanner (Gamma Squeeze & Volatility).
 """
 
 import streamlit as st
@@ -28,7 +28,7 @@ if 'shared_ticker' not in st.session_state:
     st.session_state['shared_ticker'] = "NVDA"
 
 # -----------------------------------------------------------------------------
-# 1. MOTORE MATEMATICO & DATI (CORE - INVARIATO)
+# 1. MOTORE MATEMATICO & DATI (CORE)
 # -----------------------------------------------------------------------------
 
 def get_market_data(ticker):
@@ -125,7 +125,7 @@ def vectorized_bs_gamma(S, K, T, r, sigma):
         gamma = pdf / (S * sigma * np.sqrt(T))
     return np.nan_to_num(gamma)
 
-# --- FUNZIONE HELPER PER PRICING OPZIONI ---
+# --- FUNZIONE HELPER PER PRICING OPZIONI (Tab 2) ---
 def bs_price(S, K, T, r, sigma, option_type="call"):
     """Calcola prezzo Black-Scholes per Call o Put."""
     try:
@@ -227,6 +227,7 @@ def find_zero_crossing(df, spot):
 # -----------------------------------------------------------------------------
 
 def get_rs_badge(ticker):
+    """Calcola la Forza Relativa (RS) vs SPY."""
     try:
         if ticker == "SPY": return ""
         df = yf.download([ticker, "SPY"], period="10d", progress=False)['Close']
@@ -242,6 +243,7 @@ def get_rs_badge(ticker):
     except: return ""
 
 def get_expiry_badge(calls, puts, total_gex):
+    """Calcola quanto Gamma scade entro questo Venerdì."""
     try:
         today = datetime.now().date()
         days_ahead = 4 - today.weekday()
@@ -442,7 +444,7 @@ with tab1:
                     buf = BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
                     st.download_button("💾 Scarica Report", buf.getvalue(), f"GEX_{sym}.png", "image/png", use_container_width=True)
 
-# --- TAB 2: OPTION ARCHITECT (FIXED: TARGET BUG & DIRECTION CLARITY) ---
+# --- TAB 2: OPTION ARCHITECT (FIXED & IMPROVED) ---
 with tab2:
     st.markdown("### 🧪 GEX Option Architect")
     st.markdown("Genera strategie in Opzioni utilizzando **Strike ATM per l'ingresso** e **Muri GEX come Target**.")
@@ -496,6 +498,7 @@ with tab2:
                     
                     strategy = {}
                     
+                    # LOGICA FIXED: Assign bias explicitly
                     if "Bull" in t3_scen_name:
                         if vol_regime == "LOW VOL":
                             strategy = {"name": "DEBIT CALL SPREAD", "type": "debit", "bias": "bull",
@@ -560,7 +563,7 @@ with tab2:
                     elif strategy['type'] == 'credit':
                          max_profit = abs(net_cost) * 100
                     
-                    # 6. PLOT
+                    # 6. PLOT (SCALED x100)
                     fig, ax = plt.subplots(figsize=(10, 6))
                     spot_range = np.linspace(t3_spot * 0.8, t3_spot * 1.2, 100)
                     pnl_expiration = np.zeros_like(spot_range)
@@ -593,17 +596,19 @@ with tab2:
                     ax.legend(loc='best')
                     ax.grid(True, alpha=0.3)
 
-                    # --- VISUALIZZAZIONE CORRETTA ---
+                    # --- UI DISPLAY ---
                     c_info, c_chart = st.columns([1, 2])
                     with c_info:
                         # BADGE DIREZIONE (NEW)
                         bias = strategy['bias']
+                        target_cone = t3_cw # Default
+                        
                         if bias == "bull":
                             st.markdown(f"<h3 style='color: #2E8B57; border: 2px solid #2E8B57; padding: 10px; border-radius: 10px; text-align: center;'>⬆️ RIALZISTA (LONG)</h3>", unsafe_allow_html=True)
-                            target_cone = t3_cw # Fix: target esplicito Call Wall
+                            target_cone = t3_cw 
                         elif bias == "bear":
                             st.markdown(f"<h3 style='color: #C0392B; border: 2px solid #C0392B; padding: 10px; border-radius: 10px; text-align: center;'>⬇️ RIBASSISTA (SHORT)</h3>", unsafe_allow_html=True)
-                            target_cone = t3_pw # Fix: target esplicito Put Wall
+                            target_cone = t3_pw 
                         elif bias == "neutral":
                             st.markdown(f"<h3 style='color: #555; border: 2px solid #555; padding: 10px; border-radius: 10px; text-align: center;'>↔️ NEUTRALE (RANGE)</h3>", unsafe_allow_html=True)
                             target_cone = t3_cw 
@@ -638,8 +643,6 @@ with tab2:
                     
                 else:
                     st.error("Dati Opzioni insufficienti per calcolare la strategia.")
-Use Arrow Up and Arrow Down to select a turn, Enter to jump to it, and Escape to return to the chat.
-
 
 # --- TAB 3: SQUEEZE SCANNER (INVARIATO) ---
 with tab3:
