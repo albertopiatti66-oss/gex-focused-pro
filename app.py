@@ -556,10 +556,10 @@ with tab3:
             st.markdown("""**Legenda Score:** > 40 (ESPLOSIVO), 25-40 (ALTO), 10-25 (MEDIO), < 10 (STABILE).""")
         else: st.warning("Nessun risultato.")
 
-# --- TAB 4: OPTION SWING (NEW ADVANCED LOGIC) ---
+# --- TAB 4: OPTION SWING (UPDATED: 30-45 DAYS RANGE) ---
 with tab4:
     st.markdown("### 🧪 GEX Option Architect (Swing Edition)")
-    st.markdown("Genera strategie rapide (**3-14 Giorni**) utilizzando **Strike ATM** e **Muri GEX**.")
+    st.markdown("Genera strategie (**3-45 Giorni**) utilizzando **Strike ATM** e **Muri GEX**.")
     
     ls_col1, ls_col2 = st.columns([1, 2])
     with ls_col1:
@@ -581,15 +581,22 @@ with tab4:
             st.info(f"AI Context: {t4_scen_name}")
             
             st.divider()
-            st.markdown("⏱️ **Orizzonte Swing:**")
-            target_days = st.select_slider("Giorni a Scadenza (Target)", options=[3, 5, 7, 10, 14], value=7, key="swing_days")
+            st.markdown("⏱️ **Orizzonte Temporale (DTE):**")
+            # --- MODIFICA QUI: Range esteso fino a 45gg per coprire le mensili ---
+            target_days = st.select_slider(
+                "Giorni a Scadenza (Target)", 
+                options=[3, 5, 7, 10, 15, 20, 25, 30, 45], 
+                value=30, 
+                key="swing_days"
+            )
             
             btn_strat = st.button("🛠️ Genera Swing Trade", type="primary")
 
     with ls_col2:
         if t4_spot and btn_strat:
             with st.spinner(f"Calcolo strategia Swing ({target_days} giorni)..."):
-                t4_calls, t4_puts, t4_err = get_aggregated_data(t4_sym_input, t4_spot, 6, 25)
+                # Recuperiamo dati fino a 50gg per coprire la selezione
+                t4_calls, t4_puts, t4_err = get_aggregated_data(t4_sym_input, t4_spot, 8, 25)
                 
                 if not t4_err:
                     calls_agg = t4_calls.groupby("strike")["openInterest"].sum().reset_index()
@@ -610,7 +617,17 @@ with tab4:
                     r_riskfree = 0.045
                     strategy = {}
                     
-                    if "Bull" in t4_scen_name:
+                    # --- INTELLIGENT BIAS SELECTOR (Copiato dal Tab 2) ---
+                    sma20 = t4_hist['Close'].tail(20).mean()
+                    if "Bull" in t4_scen_name: bias_is_bull = True
+                    elif "Bear" in t4_scen_name: bias_is_bull = False
+                    else: bias_is_bull = t4_spot > sma20 # Fallback su SMA20
+                    
+                    # Override scenario name per logica strategia
+                    eff_scen = "Bull" if bias_is_bull else "Bear"
+                    if "Volatile" in t4_scen_name: eff_scen = "Volatile" # Manteniamo volatile se esplicito
+                    
+                    if eff_scen == "Bull":
                         if vol_regime == "LOW VOL":
                             strategy = {"name": "DEBIT CALL SPREAD", "type": "debit", "bias": "bull",
                                         "legs": [{"action": "buy", "type": "call", "strike": t4_spot, "desc": "ATM Entry"},
@@ -619,7 +636,7 @@ with tab4:
                             strategy = {"name": "CREDIT PUT SPREAD", "type": "credit", "bias": "bull",
                                         "legs": [{"action": "sell", "type": "put", "strike": t4_pw, "desc": "Support GEX"},
                                                  {"action": "buy", "type": "put", "strike": t4_pw * 0.95, "desc": "Prot"}]}
-                    elif "Bear" in t4_scen_name:
+                    elif eff_scen == "Bear":
                         if vol_regime == "LOW VOL":
                             strategy = {"name": "DEBIT PUT SPREAD", "type": "debit", "bias": "bear",
                                         "legs": [{"action": "buy", "type": "put", "strike": t4_spot, "desc": "ATM Entry"},
@@ -628,16 +645,16 @@ with tab4:
                             strategy = {"name": "CREDIT CALL SPREAD", "type": "credit", "bias": "bear",
                                         "legs": [{"action": "sell", "type": "call", "strike": t4_cw, "desc": "Resist GEX"},
                                                  {"action": "buy", "type": "call", "strike": t4_cw * 1.05, "desc": "Prot"}]}
-                    elif "Neutral" in t4_scen_name:
+                    elif eff_scen == "Volatile":
+                        strategy = {"name": "LONG STRADDLE", "type": "debit", "bias": "volatile",
+                                    "legs": [{"action": "buy", "type": "call", "strike": t4_spot, "desc": "ATM Up"},
+                                             {"action": "buy", "type": "put", "strike": t4_spot, "desc": "ATM Down"}]}
+                    else: # Neutral fallback
                          strategy = {"name": "IRON CONDOR", "type": "credit", "bias": "neutral",
                                         "legs": [{"action": "sell", "type": "put", "strike": t4_pw, "desc": "Low Wall"},
                                                  {"action": "buy", "type": "put", "strike": t4_pw * 0.95, "desc": "Prot"},
                                                  {"action": "sell", "type": "call", "strike": t4_cw, "desc": "High Wall"},
                                                  {"action": "buy", "type": "call", "strike": t4_cw * 1.05, "desc": "Prot"}]}
-                    else:
-                        strategy = {"name": "LONG STRADDLE", "type": "debit", "bias": "volatile",
-                                    "legs": [{"action": "buy", "type": "call", "strike": t4_spot, "desc": "ATM Up"},
-                                             {"action": "buy", "type": "put", "strike": t4_spot, "desc": "ATM Down"}]}
 
                     net_cost = 0
                     for leg in strategy['legs']:
@@ -656,7 +673,9 @@ with tab4:
                          max_profit = abs(net_cost) * 100
                     
                     fig, ax = plt.subplots(figsize=(10, 6))
-                    spot_range = np.linspace(t4_spot * 0.90, t4_spot * 1.10, 100)
+                    # Zoom adattivo in base alla durata (più giorni = più range)
+                    zoom_factor = 0.10 + (target_days / 365.0) 
+                    spot_range = np.linspace(t4_spot * (1-zoom_factor), t4_spot * (1+zoom_factor), 100)
                     pnl_expiration = np.zeros_like(spot_range)
                     pnl_today = np.zeros_like(spot_range)
                     
@@ -714,7 +733,7 @@ with tab4:
                         else:
                             st.success(f"💰 Incasso (Max Profit): ${abs(net_cost)*100:.2f}")
                         
-                        st.caption(f"Analisi basata su scadenza tra **{target_days} giorni**.")
+                        st.caption(f"Analisi su orizzonte **{target_days} giorni**.")
                         st.markdown("---")
                         st.write("**Struttura Ordine:**")
                         for l in strategy['legs']:
