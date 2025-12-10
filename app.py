@@ -442,7 +442,7 @@ with tab1:
                     buf = BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
                     st.download_button("💾 Scarica Report", buf.getvalue(), f"GEX_{sym}.png", "image/png", use_container_width=True)
 
-# --- TAB 2: OPTION ARCHITECT (UPDATED) ---
+# --- TAB 2: OPTION ARCHITECT (FIXED: TARGET BUG & DIRECTION CLARITY) ---
 with tab2:
     st.markdown("### 🧪 GEX Option Architect")
     st.markdown("Genera strategie in Opzioni utilizzando **Strike ATM per l'ingresso** e **Muri GEX come Target**.")
@@ -473,12 +473,11 @@ with tab2:
                 t3_calls, t3_puts, t3_err = get_aggregated_data(t3_sym_input, t3_spot, 6, 25)
                 
                 if not t3_err:
-                    # 1. MAPPING MURI (Logica Tab 1)
+                    # 1. MAPPING MURI
                     calls_agg = t3_calls.groupby("strike")["openInterest"].sum().reset_index()
                     puts_agg = t3_puts.groupby("strike")["openInterest"].sum().reset_index()
                     try:
                         cw_df = calls_agg[calls_agg['strike'] > t3_spot]
-                        # Cerca il muro più vicino significativo (Smart Selection)
                         t3_cw = cw_df.sort_values("openInterest", ascending=False).iloc[0]['strike'] if not cw_df.empty else t3_spot * 1.05
                         pw_df = puts_agg[puts_agg['strike'] < t3_spot]
                         t3_pw = pw_df.sort_values("openInterest", ascending=False).iloc[0]['strike'] if not pw_df.empty else t3_spot * 0.95
@@ -490,7 +489,7 @@ with tab2:
                     iv_est = iv_est_series.mean() if not iv_est_series.empty else hv_current
                     vol_regime = "HIGH VOL" if (iv_est / hv_current > 1.15) else "LOW VOL"
 
-                    # 3. DEFINIZIONE STRATEGIA (MATRICE)
+                    # 3. DEFINIZIONE STRATEGIA
                     dte_days = 30
                     T_years = dte_days / 365.0
                     r_riskfree = 0.045
@@ -507,7 +506,7 @@ with tab2:
                         else:
                             strategy = {"name": "CREDIT PUT SPREAD", "type": "credit", "bias": "bull",
                                         "legs": [
-                                            {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Defensa GEX"},
+                                            {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Defense GEX"},
                                             {"action": "buy", "type": "put", "strike": t3_pw * 0.95, "desc": "Protection"}
                                         ]}
                     elif "Bear" in t3_scen_name:
@@ -538,7 +537,7 @@ with tab2:
                                         {"action": "buy", "type": "put", "strike": t3_spot, "desc": "ATM Downside"}
                                     ]}
 
-                    # 4. CALCOLO PREZZI & PAYOFF
+                    # 4. CALCOLO PREZZI
                     net_cost = 0
                     for leg in strategy['legs']:
                         try:
@@ -553,7 +552,7 @@ with tab2:
                         if leg['action'] == 'buy': net_cost += real_price
                         else: net_cost -= real_price
                     
-                    # 5. MAX PROFIT CALC
+                    # 5. MAX PROFIT
                     max_profit = 0.0
                     if strategy['name'] in ["DEBIT CALL SPREAD", "DEBIT PUT SPREAD"]:
                          width = abs(strategy['legs'][0]['strike'] - strategy['legs'][1]['strike'])
@@ -561,7 +560,7 @@ with tab2:
                     elif strategy['type'] == 'credit':
                          max_profit = abs(net_cost) * 100
                     
-                    # 6. GENERAZIONE GRAFICO (SCALATO PER 100)
+                    # 6. PLOT
                     fig, ax = plt.subplots(figsize=(10, 6))
                     spot_range = np.linspace(t3_spot * 0.8, t3_spot * 1.2, 100)
                     pnl_expiration = np.zeros_like(spot_range)
@@ -572,47 +571,53 @@ with tab2:
                         k = leg['strike']
                         sign = 1 if leg['action'] == 'buy' else -1
                         price = leg['price']
-                        
                         if leg['type'] == 'call': pay = np.maximum(s_vals - k, 0)
                         else: pay = np.maximum(k - s_vals, 0)
-                        # SCALING x100
                         pnl_expiration += sign * (pay - price) * 100
-                        
                         bs_vals = []
                         for s in s_vals:
                             bs_vals.append(bs_price(s, k, T_years, r_riskfree, iv_est, leg['type']))
-                        # SCALING x100
                         pnl_today += sign * (np.array(bs_vals) - price) * 100
 
                     ax.plot(spot_range, pnl_expiration, label='Profitto a Scadenza', color='#1565C0', lw=2)
                     ax.plot(spot_range, pnl_today, label='Profitto Oggi (T+0)', color='#FF9800', ls='--', lw=1.5)
-                    
                     ax.axhline(0, color='black', lw=1)
                     ax.axvline(t3_spot, color='gray', ls=':', label='Spot Price')
                     ax.axvline(t3_cw, color='#21618C', ls='-.', label=f'Call Wall ${int(t3_cw)}')
                     ax.axvline(t3_pw, color='#D35400', ls='-.', label=f'Put Wall ${int(t3_pw)}')
-                    
                     ax.fill_between(spot_range, 0, pnl_expiration, where=(pnl_expiration>0), color='green', alpha=0.1)
                     ax.fill_between(spot_range, 0, pnl_expiration, where=(pnl_expiration<0), color='red', alpha=0.1)
-                    ax.set_title(f"Payoff: {strategy['name']} ({strategy['bias'].upper()})", fontweight='bold')
+                    ax.set_title(f"Payoff: {strategy['name']}", fontweight='bold')
                     ax.set_xlabel(f"Prezzo {t3_sym_input}")
-                    ax.set_ylabel("P&L ($)") # Changed Label
+                    ax.set_ylabel("P&L ($)")
                     ax.legend(loc='best')
                     ax.grid(True, alpha=0.3)
 
-                    # Display
+                    # --- VISUALIZZAZIONE CORRETTA ---
                     c_info, c_chart = st.columns([1, 2])
                     with c_info:
+                        # BADGE DIREZIONE (NEW)
+                        bias = strategy['bias']
+                        if bias == "bull":
+                            st.markdown(f"<h3 style='color: #2E8B57; border: 2px solid #2E8B57; padding: 10px; border-radius: 10px; text-align: center;'>⬆️ RIALZISTA (LONG)</h3>", unsafe_allow_html=True)
+                            target_cone = t3_cw # Fix: target esplicito Call Wall
+                        elif bias == "bear":
+                            st.markdown(f"<h3 style='color: #C0392B; border: 2px solid #C0392B; padding: 10px; border-radius: 10px; text-align: center;'>⬇️ RIBASSISTA (SHORT)</h3>", unsafe_allow_html=True)
+                            target_cone = t3_pw # Fix: target esplicito Put Wall
+                        elif bias == "neutral":
+                            st.markdown(f"<h3 style='color: #555; border: 2px solid #555; padding: 10px; border-radius: 10px; text-align: center;'>↔️ NEUTRALE (RANGE)</h3>", unsafe_allow_html=True)
+                            target_cone = t3_cw 
+                        else:
+                            st.markdown(f"<h3 style='color: #F39C12; border: 2px solid #F39C12; padding: 10px; border-radius: 10px; text-align: center;'>💥 VOLATILE (ANY DIR)</h3>", unsafe_allow_html=True)
+                            target_cone = t3_cw
+
                         st.markdown(f"#### 📡 Strategy: {strategy['name']}")
                         if strategy['type'] == 'debit':
                             st.error(f"📉 Costo (Rischio): ${net_cost*100:.2f}")
-                            if max_profit > 0:
-                                st.success(f"🎯 Max Profit: ${max_profit:.2f}")
-                            else:
-                                st.info("Profitto Illimitato (Explosive)")
+                            if max_profit > 0: st.success(f"🎯 Max Profit: ${max_profit:.2f}")
+                            else: st.info("Profitto Illimitato")
                         else:
                             st.success(f"💰 Incasso (Max Profit): ${abs(net_cost)*100:.2f}")
-                            st.caption("Rischio definito dagli spread.")
                         
                         st.markdown("---")
                         st.write("**Struttura Leg:**")
@@ -620,22 +625,21 @@ with tab2:
                             icon = "🟢" if l['action'] == "buy" else "🔴"
                             st.write(f"{icon} {l['action'].upper()} {l['type'].upper()} ${int(l['strike'])} ({l['desc']})")
                         
-                        if vol_regime == "HIGH VOL": st.warning(f"⚠️ High Volatility ({iv_est:.1%}). Strategie Credit favorite.")
-                        else: st.info(f"✅ Low Volatility ({iv_est:.1%}). Strategie Debit favorite.")
+                        if vol_regime == "HIGH VOL": st.warning(f"⚠️ High Volatility ({iv_est:.1%}). Credit favorite.")
+                        else: st.info(f"✅ Low Volatility ({iv_est:.1%}). Debit favorite.")
 
                     with c_chart:
                         st.pyplot(fig)
-                        
-                        # CONE INTEGRATION
-                        st.markdown("##### 🎲 Probability Cone (Target Analysis)")
-                        target_cone = t3_cw if "Bull" in strategy['bias'] or "Volatile" in strategy['bias'] else t3_pw
-                        if strategy['bias'] == "neutral": target_cone = t3_cw # Upper bound
+                        # Fix Target per Cono
+                        st.markdown(f"##### 🎲 Probability Cone (Target: ${target_cone:.2f})")
                         fig_cone, txt_cone = plot_probability_cone(t3_spot, iv_est, target_cone, days=30)
                         st.pyplot(fig_cone)
                         st.info(txt_cone)
                     
                 else:
                     st.error("Dati Opzioni insufficienti per calcolare la strategia.")
+Use Arrow Up and Arrow Down to select a turn, Enter to jump to it, and Escape to return to the chat.
+
 
 # --- TAB 3: SQUEEZE SCANNER (INVARIATO) ---
 with tab3:
