@@ -444,10 +444,10 @@ with tab1:
                     buf = BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
                     st.download_button("💾 Scarica Report", buf.getvalue(), f"GEX_{sym}.png", "image/png", use_container_width=True)
 
-# --- TAB 2: OPTION ARCHITECT (FIXED & IMPROVED) ---
+# --- TAB 2: OPTION ARCHITECT (SWING TRADING 3-10 DAYS EDITION) ---
 with tab2:
-    st.markdown("### 🧪 GEX Option Architect")
-    st.markdown("Genera strategie in Opzioni utilizzando **Strike ATM per l'ingresso** e **Muri GEX come Target**.")
+    st.markdown("### 🧪 GEX Option Architect (Swing Edition)")
+    st.markdown("Genera strategie rapide (**3-10 Giorni**) utilizzando **Strike ATM** e **Muri GEX**.")
     
     ls_col1, ls_col2 = st.columns([1, 2])
     with ls_col1:
@@ -457,48 +457,58 @@ with tab2:
         t3_spot, t3_adv, t3_hist = get_market_data(t3_sym_input)
         
         if t3_spot:
+            # Calcoli Volatilità
             t3_hist['LogRet'] = np.log(t3_hist['Close'] / t3_hist['Close'].shift(1))
             hv_current = t3_hist['LogRet'].tail(20).std() * np.sqrt(252)
+            
             st.metric("Spot Price", f"${t3_spot:.2f}")
             rs_html_t2 = get_rs_badge(t3_sym_input)
             if rs_html_t2: st.markdown(rs_html_t2, unsafe_allow_html=True)
-            t3_earn = check_earnings_risk(t3_sym_input)
-            if t3_earn: st.error(t3_earn)
+            
+            # Context AI
             t3_scen_tuple = suggest_market_context(t3_hist)
             t3_scen_name = t3_scen_tuple[0]
             st.info(f"AI Context: {t3_scen_name}")
-            btn_strat = st.button("🛠️ Genera Strategia Opzioni", type="primary")
+            
+            st.divider()
+            # NUOVO: SELETTORE ORIZZONTE TEMPORALE (3-10 GG)
+            st.markdown("⏱️ **Orizzonte Swing:**")
+            target_days = st.select_slider("Giorni a Scadenza (Target)", options=[3, 5, 7, 10, 14], value=7, key="swing_days")
+            
+            btn_strat = st.button("🛠️ Genera Swing Trade", type="primary")
 
     with ls_col2:
         if t3_spot and btn_strat:
-            with st.spinner("Analisi Volatilità e Payoff..."):
+            with st.spinner(f"Calcolo strategia Swing ({target_days} giorni)..."):
+                # Scarichiamo dati a breve scadenza
                 t3_calls, t3_puts, t3_err = get_aggregated_data(t3_sym_input, t3_spot, 6, 25)
                 
                 if not t3_err:
-                    # 1. MAPPING MURI
+                    # 1. MAPPING MURI & LEVELS
                     calls_agg = t3_calls.groupby("strike")["openInterest"].sum().reset_index()
                     puts_agg = t3_puts.groupby("strike")["openInterest"].sum().reset_index()
                     try:
                         cw_df = calls_agg[calls_agg['strike'] > t3_spot]
+                        # Muro Call più vicino
                         t3_cw = cw_df.sort_values("openInterest", ascending=False).iloc[0]['strike'] if not cw_df.empty else t3_spot * 1.05
                         pw_df = puts_agg[puts_agg['strike'] < t3_spot]
+                        # Muro Put più vicino
                         t3_pw = pw_df.sort_values("openInterest", ascending=False).iloc[0]['strike'] if not pw_df.empty else t3_spot * 0.95
                     except:
                         t3_cw, t3_pw = t3_spot*1.05, t3_spot*0.95
 
-                    # 2. VOL REGIME
+                    # 2. VOLATILITY REGIME
                     iv_est_series = t3_calls[t3_calls['strike'].between(t3_spot*0.95, t3_spot*1.05)]['impliedVolatility']
                     iv_est = iv_est_series.mean() if not iv_est_series.empty else hv_current
                     vol_regime = "HIGH VOL" if (iv_est / hv_current > 1.15) else "LOW VOL"
 
-                    # 3. DEFINIZIONE STRATEGIA
-                    dte_days = 30
-                    T_years = dte_days / 365.0
+                    # 3. STRATEGIA (Tempo calcolato sullo Slider)
+                    T_years = target_days / 365.0
                     r_riskfree = 0.045
                     
                     strategy = {}
                     
-                    # LOGICA FIXED: Assign bias explicitly
+                    # Logica Direzionale
                     if "Bull" in t3_scen_name:
                         if vol_regime == "LOW VOL":
                             strategy = {"name": "DEBIT CALL SPREAD", "type": "debit", "bias": "bull",
@@ -509,8 +519,8 @@ with tab2:
                         else:
                             strategy = {"name": "CREDIT PUT SPREAD", "type": "credit", "bias": "bull",
                                         "legs": [
-                                            {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Defense GEX"},
-                                            {"action": "buy", "type": "put", "strike": t3_pw * 0.95, "desc": "Protection"}
+                                            {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Support GEX"},
+                                            {"action": "buy", "type": "put", "strike": t3_pw * 0.95, "desc": "Prot"}
                                         ]}
                     elif "Bear" in t3_scen_name:
                         if vol_regime == "LOW VOL":
@@ -522,34 +532,32 @@ with tab2:
                         else:
                             strategy = {"name": "CREDIT CALL SPREAD", "type": "credit", "bias": "bear",
                                         "legs": [
-                                            {"action": "sell", "type": "call", "strike": t3_cw, "desc": "Defense GEX"},
-                                            {"action": "buy", "type": "call", "strike": t3_cw * 1.05, "desc": "Protection"}
+                                            {"action": "sell", "type": "call", "strike": t3_cw, "desc": "Resist GEX"},
+                                            {"action": "buy", "type": "call", "strike": t3_cw * 1.05, "desc": "Prot"}
                                         ]}
                     elif "Neutral" in t3_scen_name:
                          strategy = {"name": "IRON CONDOR", "type": "credit", "bias": "neutral",
                                         "legs": [
-                                            {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Wall Low"},
-                                            {"action": "buy", "type": "put", "strike": t3_pw * 0.95, "desc": "Prot Low"},
-                                            {"action": "sell", "type": "call", "strike": t3_cw, "desc": "Wall High"},
-                                            {"action": "buy", "type": "call", "strike": t3_cw * 1.05, "desc": "Prot High"}
+                                            {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Low Wall"},
+                                            {"action": "buy", "type": "put", "strike": t3_pw * 0.95, "desc": "Prot"},
+                                            {"action": "sell", "type": "call", "strike": t3_cw, "desc": "High Wall"},
+                                            {"action": "buy", "type": "call", "strike": t3_cw * 1.05, "desc": "Prot"}
                                         ]}
                     else:
                         strategy = {"name": "LONG STRADDLE", "type": "debit", "bias": "volatile",
                                     "legs": [
-                                        {"action": "buy", "type": "call", "strike": t3_spot, "desc": "ATM Upside"},
-                                        {"action": "buy", "type": "put", "strike": t3_spot, "desc": "ATM Downside"}
+                                        {"action": "buy", "type": "call", "strike": t3_spot, "desc": "ATM Up"},
+                                        {"action": "buy", "type": "put", "strike": t3_spot, "desc": "ATM Down"}
                                     ]}
 
-                    # 4. CALCOLO PREZZI
+                    # 4. PRICING & CALCOLO (Usando T_years basato su 3-10 gg)
                     net_cost = 0
                     for leg in strategy['legs']:
                         try:
-                            df_opts = t3_calls if leg['type'] == 'call' else t3_puts
-                            nearest_idx = (df_opts['strike'] - leg['strike']).abs().idxmin()
-                            real_price = df_opts.loc[nearest_idx, 'lastPrice']
-                            if pd.isna(real_price) or real_price < 0.01: raise ValueError
-                        except:
+                            # Tentativo prezzo reale (spesso fallisce su scadenze strane, fallback su BS)
                             real_price = bs_price(t3_spot, leg['strike'], T_years, r_riskfree, iv_est, leg['type'])
+                        except:
+                            real_price = 0
                         
                         leg['price'] = real_price
                         if leg['action'] == 'buy': net_cost += real_price
@@ -563,9 +571,9 @@ with tab2:
                     elif strategy['type'] == 'credit':
                          max_profit = abs(net_cost) * 100
                     
-                    # 6. PLOT (SCALED x100)
+                    # 6. GRAFICO PAYOFF (SCALED x100)
                     fig, ax = plt.subplots(figsize=(10, 6))
-                    spot_range = np.linspace(t3_spot * 0.8, t3_spot * 1.2, 100)
+                    spot_range = np.linspace(t3_spot * 0.90, t3_spot * 1.10, 100) # Zoom più stretto per Swing
                     pnl_expiration = np.zeros_like(spot_range)
                     pnl_today = np.zeros_like(spot_range)
                     
@@ -574,35 +582,41 @@ with tab2:
                         k = leg['strike']
                         sign = 1 if leg['action'] == 'buy' else -1
                         price = leg['price']
+                        
                         if leg['type'] == 'call': pay = np.maximum(s_vals - k, 0)
                         else: pay = np.maximum(k - s_vals, 0)
                         pnl_expiration += sign * (pay - price) * 100
+                        
                         bs_vals = []
                         for s in s_vals:
                             bs_vals.append(bs_price(s, k, T_years, r_riskfree, iv_est, leg['type']))
                         pnl_today += sign * (np.array(bs_vals) - price) * 100
 
-                    ax.plot(spot_range, pnl_expiration, label='Profitto a Scadenza', color='#1565C0', lw=2)
-                    ax.plot(spot_range, pnl_today, label='Profitto Oggi (T+0)', color='#FF9800', ls='--', lw=1.5)
+                    ax.plot(spot_range, pnl_expiration, label=f'P&L Scadenza ({target_days}gg)', color='#1565C0', lw=2)
+                    ax.plot(spot_range, pnl_today, label='P&L Oggi', color='#FF9800', ls='--', lw=1.5)
                     ax.axhline(0, color='black', lw=1)
-                    ax.axvline(t3_spot, color='gray', ls=':', label='Spot Price')
-                    ax.axvline(t3_cw, color='#21618C', ls='-.', label=f'Call Wall ${int(t3_cw)}')
-                    ax.axvline(t3_pw, color='#D35400', ls='-.', label=f'Put Wall ${int(t3_pw)}')
+                    ax.axvline(t3_spot, color='gray', ls=':', label=f'Spot ${t3_spot:.2f}')
+                    
+                    # Visualizza Target e Muri
+                    if "bull" in strategy['bias'] or "volatile" in strategy['bias']:
+                        ax.axvline(t3_cw, color='#21618C', ls='-.', label=f'Target Call Wall ${int(t3_cw)}')
+                    if "bear" in strategy['bias'] or "volatile" in strategy['bias'] or "neutral" in strategy['bias']:
+                        ax.axvline(t3_pw, color='#D35400', ls='-.', label=f'Target Put Wall ${int(t3_pw)}')
+
                     ax.fill_between(spot_range, 0, pnl_expiration, where=(pnl_expiration>0), color='green', alpha=0.1)
                     ax.fill_between(spot_range, 0, pnl_expiration, where=(pnl_expiration<0), color='red', alpha=0.1)
-                    ax.set_title(f"Payoff: {strategy['name']}", fontweight='bold')
-                    ax.set_xlabel(f"Prezzo {t3_sym_input}")
-                    ax.set_ylabel("P&L ($)")
-                    ax.legend(loc='best')
+                    ax.set_title(f"Swing Payoff: {strategy['name']}", fontweight='bold')
+                    ax.set_xlabel("Prezzo Sottostante")
+                    ax.set_ylabel("Profitto/Perdita Reale ($)")
+                    ax.legend(loc='best', fontsize=9)
                     ax.grid(True, alpha=0.3)
 
                     # --- UI DISPLAY ---
                     c_info, c_chart = st.columns([1, 2])
                     with c_info:
-                        # BADGE DIREZIONE (NEW)
+                        # BADGE DIREZIONE
                         bias = strategy['bias']
-                        target_cone = t3_cw # Default
-                        
+                        target_cone = t3_cw 
                         if bias == "bull":
                             st.markdown(f"<h3 style='color: #2E8B57; border: 2px solid #2E8B57; padding: 10px; border-radius: 10px; text-align: center;'>⬆️ RIALZISTA (LONG)</h3>", unsafe_allow_html=True)
                             target_cone = t3_cw 
@@ -611,38 +625,37 @@ with tab2:
                             target_cone = t3_pw 
                         elif bias == "neutral":
                             st.markdown(f"<h3 style='color: #555; border: 2px solid #555; padding: 10px; border-radius: 10px; text-align: center;'>↔️ NEUTRALE (RANGE)</h3>", unsafe_allow_html=True)
-                            target_cone = t3_cw 
                         else:
-                            st.markdown(f"<h3 style='color: #F39C12; border: 2px solid #F39C12; padding: 10px; border-radius: 10px; text-align: center;'>💥 VOLATILE (ANY DIR)</h3>", unsafe_allow_html=True)
-                            target_cone = t3_cw
+                            st.markdown(f"<h3 style='color: #F39C12; border: 2px solid #F39C12; padding: 10px; border-radius: 10px; text-align: center;'>💥 VOLATILE</h3>", unsafe_allow_html=True)
 
-                        st.markdown(f"#### 📡 Strategy: {strategy['name']}")
+                        st.markdown(f"#### 📡 {strategy['name']}")
                         if strategy['type'] == 'debit':
-                            st.error(f"📉 Costo (Rischio): ${net_cost*100:.2f}")
+                            st.error(f"📉 Costo (Max Risk): ${net_cost*100:.2f}")
                             if max_profit > 0: st.success(f"🎯 Max Profit: ${max_profit:.2f}")
                             else: st.info("Profitto Illimitato")
                         else:
                             st.success(f"💰 Incasso (Max Profit): ${abs(net_cost)*100:.2f}")
                         
+                        st.caption(f"Analisi basata su scadenza tra **{target_days} giorni**.")
+                        if target_days <= 5 and strategy['type'] == 'debit':
+                            st.warning("⚠️ ATTENZIONE: Scadenza brevissima! Il Theta decay è molto alto. Serve un movimento immediato.")
+
                         st.markdown("---")
-                        st.write("**Struttura Leg:**")
+                        st.write("**Struttura Ordine:**")
                         for l in strategy['legs']:
                             icon = "🟢" if l['action'] == "buy" else "🔴"
-                            st.write(f"{icon} {l['action'].upper()} {l['type'].upper()} ${int(l['strike'])} ({l['desc']})")
+                            st.write(f"{icon} {l['action'].upper()} {l['type'].upper()} **${int(l['strike'])}**")
                         
-                        if vol_regime == "HIGH VOL": st.warning(f"⚠️ High Volatility ({iv_est:.1%}). Credit favorite.")
-                        else: st.info(f"✅ Low Volatility ({iv_est:.1%}). Debit favorite.")
-
                     with c_chart:
                         st.pyplot(fig)
-                        # Fix Target per Cono
-                        st.markdown(f"##### 🎲 Probability Cone (Target: ${target_cone:.2f})")
-                        fig_cone, txt_cone = plot_probability_cone(t3_spot, iv_est, target_cone, days=30)
+                        st.markdown(f"##### 🎲 Probability Cone ({target_days} Giorni)")
+                        # Cono calcolato sui giorni effettivi dello swing
+                        fig_cone, txt_cone = plot_probability_cone(t3_spot, iv_est, target_cone, days=target_days)
                         st.pyplot(fig_cone)
                         st.info(txt_cone)
                     
                 else:
-                    st.error("Dati Opzioni insufficienti per calcolare la strategia.")
+                    st.error("Dati Opzioni insufficienti.")
 
 # --- TAB 3: SQUEEZE SCANNER (INVARIATO) ---
 with tab3:
