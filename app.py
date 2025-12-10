@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.25 (Badges Update + Strategy Lab)
+GEX Positioning v20.9.25 (Badges Update)
 - NEW: Badge "Relative Strength" (RS) vs SPY.
 - NEW: Badge "Expiry Risk" (% Gamma in scadenza venerdì).
-- NEW: Tab 2 Strategy Lab con Opzioni (Spread/Condor).
 - LOGIC: Motore matematico e Obstacle Check (Median) invariati.
+- UPDATE: Tab 2 Strategy Lab con Grafici Payoff e Logica ATM/Muri.
 """
 
 import streamlit as st
@@ -127,6 +127,19 @@ def vectorized_bs_gamma(S, K, T, r, sigma):
         gamma = pdf / (S * sigma * np.sqrt(T))
     return np.nan_to_num(gamma)
 
+# --- NUOVA FUNZIONE HELPER PER PRICING OPZIONI (Necessaria per Tab 2) ---
+def bs_price(S, K, T, r, sigma, option_type="call"):
+    """Calcola prezzo Black-Scholes per Call o Put."""
+    try:
+        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+        if option_type == "call":
+            price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+        else:
+            price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        return max(price, 0.0)
+    except: return 0.0
+
 @st.cache_data(ttl=600)
 def get_aggregated_data(symbol, spot_price, n_expirations=8, range_pct=25.0):
     try:
@@ -212,7 +225,7 @@ def find_zero_crossing(df, spot):
     except: return None
 
 # -----------------------------------------------------------------------------
-# 2. NUOVE FUNZIONI BADGES (RS & EXPIRY) & NUOVA LOGICA OPZIONI
+# 2. NUOVE FUNZIONI BADGES (RS & EXPIRY)
 # -----------------------------------------------------------------------------
 
 def get_rs_badge(ticker):
@@ -221,17 +234,21 @@ def get_rs_badge(ticker):
         if ticker == "SPY": return ""
         df = yf.download([ticker, "SPY"], period="10d", progress=False)['Close']
         if df.empty: return ""
+        
+        # Gestione Multi-Index se scarica entrambi
         if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.droplevel(0)
+            df.columns = df.columns.droplevel(0) # Appiattisci se necessario (dipende versione yfinance)
             
+        # Calcolo Performance
+        # Nota: yfinance a volte cambia format, usiamo il metodo più sicuro: pct_change
         perf_ticker = (df[ticker].iloc[-1] - df[ticker].iloc[0]) / df[ticker].iloc[0]
         perf_spy = (df["SPY"].iloc[-1] - df["SPY"].iloc[0]) / df["SPY"].iloc[0]
         
         rs = perf_ticker - perf_spy
         
-        if rs > 0.01:
+        if rs > 0.01: # +1% vs SPY
             return f"<span style='background-color:#E8F5E9; color:#2E8B57; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #2E8B57; font-size:12px;'>🚀 LEADER (RS +{rs*100:.1f}%)</span>"
-        elif rs < -0.01:
+        elif rs < -0.01: # -1% vs SPY
             return f"<span style='background-color:#FFEBEE; color:#C0392B; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #C0392B; font-size:12px;'>🐢 LAGGARD (RS {rs*100:.1f}%)</span>"
         else:
             return f"<span style='background-color:#F5F5F5; color:#555; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #CCC; font-size:12px;'>⚖️ IN LINE (RS {rs*100:.1f}%)</span>"
@@ -242,11 +259,13 @@ def get_expiry_badge(calls, puts, total_gex):
     """Calcola quanto Gamma scade entro questo Venerdì."""
     try:
         today = datetime.now().date()
+        # Trova prossimo venerdì
         days_ahead = 4 - today.weekday()
         if days_ahead < 0: days_ahead += 7
         next_friday = today + timedelta(days=days_ahead)
         next_friday_str = next_friday.strftime('%Y-%m-%d')
         
+        # Filtra GEX in scadenza
         c_exp = calls[calls['expiry'] <= next_friday_str]['GEX'].abs().sum()
         p_exp = puts[puts['expiry'] <= next_friday_str]['GEX'].abs().sum()
         
@@ -257,110 +276,12 @@ def get_expiry_badge(calls, puts, total_gex):
         
         ratio = expiring_gex / total_abs_gex
         
-        if ratio > 0.35:
+        if ratio > 0.35: # >35% scade questa settimana
             return f"<span style='background-color:#FFF3E0; color:#EF6C00; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #EF6C00; font-size:12px;'>⚠️ EXPIRY RISK: {ratio:.0%} scade Ven.</span>"
         else:
             return f"<span style='background-color:#E3F2FD; color:#1565C0; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #1565C0; font-size:12px;'>🔒 SOLID: Solo {ratio:.0%} scade Ven.</span>"
     except:
         return ""
-
-def get_option_strategy_logic(scenario, vol_regime, spot, call_wall, put_wall):
-    """
-    Genera la struttura del trade in Opzioni basandosi su GEX Walls e Volatilità.
-    Call Wall = Resistenza (Tetto). Put Wall = Supporto (Pavimento).
-    """
-    cw = float(call_wall)
-    pw = float(put_wall)
-    spot = float(spot)
-    wing_width = spot * 0.05 
-    
-    # 1. SCENARIO BULLISH 🐂
-    if "Bull" in scenario:
-        if vol_regime == "LOW VOL":
-            # Debit Call Spread
-            return {
-                "name": "🐂 BULL CALL SPREAD (Debit)",
-                "desc": "Sfruttiamo la bassa volatilità per comprare direzionalità economica.",
-                "legs": [
-                    f"🟢 BUY Call Strike ${spot:.0f} (ATM)",
-                    f"🔴 SELL Call Strike ${cw:.0f} (Target/Resistenza GEX)"
-                ],
-                "logic": f"Compri ATM per delta. Vendi la Call a ${cw:.0f} (Call Wall) perché ti aspetti che il prezzo trovi resistenza lì. La vendita finanzia l'acquisto."
-            }
-        else: # HIGH VOL
-            # Credit Put Spread
-            return {
-                "name": "🛡️ BULL PUT SPREAD (Credit)",
-                "desc": "Sfruttiamo l'alta volatilità per incassare premio vendendo supporto.",
-                "legs": [
-                    f"🔴 SELL Put Strike ${pw:.0f} (Supporto GEX)",
-                    f"🟢 BUY Put Strike ${pw - wing_width:.0f} (Protezione)"
-                ],
-                "logic": f"Vendi la Put a ${pw:.0f} (Put Wall) scommettendo che il prezzo non scenda sotto questo muro. Incassi subito il premio (Theta decay a favore)."
-            }
-
-    # 2. SCENARIO BEARISH 🐻
-    elif "Bear" in scenario:
-        if vol_regime == "LOW VOL":
-            # Debit Put Spread
-            return {
-                "name": "🐻 BEAR PUT SPREAD (Debit)",
-                "desc": "Speculazione ribassista a basso costo.",
-                "legs": [
-                    f"🟢 BUY Put Strike ${spot:.0f} (ATM)",
-                    f"🔴 SELL Put Strike ${pw:.0f} (Target/Supporto GEX)"
-                ],
-                "logic": f"Compri Put ATM. Vendi la Put a ${pw:.0f} (Put Wall) perché è il floor naturale del mercato. Massimizzi il profitto fino al muro."
-            }
-        else: # HIGH VOL
-            # Credit Call Spread
-            return {
-                "name": "🛡️ BEAR CALL SPREAD (Credit)",
-                "desc": "Incasso premio usando il muro Call come scudo.",
-                "legs": [
-                    f"🔴 SELL Call Strike ${cw:.0f} (Resistenza GEX)",
-                    f"🟢 BUY Call Strike ${cw + wing_width:.0f} (Protezione)"
-                ],
-                "logic": f"Vendi la Call a ${cw:.0f} (Call Wall) scommettendo che il prezzo non riesca a sfondare questa resistenza. Il tempo lavora per te."
-            }
-
-    # 3. SCENARIO NEUTRAL 💤
-    elif "Neutral" in scenario or "Short Straddle" in scenario:
-        if vol_regime == "HIGH VOL":
-            # Iron Condor
-            return {
-                "name": "🦅 IRON CONDOR (Credit)",
-                "desc": "Ingabbiamo il prezzo tra i due Muri GEX.",
-                "legs": [
-                    f"🔴 SELL Put Strike ${pw:.0f} (Muro Supporto)",
-                    f"🔴 SELL Call Strike ${cw:.0f} (Muro Resistenza)",
-                    f"🟢 Wings (Protezioni) a ±5% esterno"
-                ],
-                "logic": f"Il mercato è laterale. Vendiamo entrambi i muri (${pw:.0f} e ${cw:.0f}) scommettendo che il prezzo rimanga in questo range fino a scadenza."
-            }
-        else:
-            return {
-                "name": "🦋 LONG BUTTERFLY (Debit)",
-                "desc": "Target preciso sul prezzo attuale (Pinning).",
-                "legs": [
-                    f"Buy 1 Call ITM",
-                    f"Sell 2 Call Strike ${spot:.0f}",
-                    f"Buy 1 Call OTM"
-                ],
-                "logic": "Volatilità bassa e mercato fermo. Scommettiamo che il prezzo non si muova (Pinning sullo Spot)."
-            }
-
-    # 4. SCENARIO VOLATILE 💥
-    else:
-        return {
-            "name": "🧨 LONG STRADDLE / STRANGLE",
-            "desc": "Esplosione attesa oltre i muri.",
-            "legs": [
-                f"🟢 BUY Call Strike ${cw:.0f} (Breakout)",
-                f"🟢 BUY Put Strike ${pw:.0f} (Breakdown)"
-            ],
-            "logic": "Il GEX suggerisce instabilità. Non vendiamo muri (rischioso). Compriamo opzioni aspettando che uno dei due muri venga rotto violentemente."
-        }
 
 # -----------------------------------------------------------------------------
 # 3. FUNZIONI GRAFICHE & REPORT
@@ -495,7 +416,7 @@ def plot_probability_cone(spot, iv, target_price, days=30):
 st.title("⚡ GEX Positioning Suite v20")
 tab1, tab2, tab3 = st.tabs(["📊 Analisi Singola", "🧪 GEX Option Architect", "🔥 Squeeze Scanner"])
 
-# --- TAB 1: ANALISI SINGOLA ---
+# --- TAB 1: ANALISI SINGOLA (INVARIATO) ---
 with tab1:
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -546,10 +467,10 @@ with tab1:
                     buf = BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
                     st.download_button("💾 Scarica Report", buf.getvalue(), f"GEX_{sym}.png", "image/png", use_container_width=True)
 
-# --- TAB 2: STRATEGY LAB (OPTION ARCHITECT) ---
+# --- TAB 2: OPTION ARCHITECT (RISCRITTO CON LOGICA CORRETTA) ---
 with tab2:
     st.markdown("### 🧪 GEX Option Architect")
-    st.markdown("Genera strategie in Opzioni utilizzando i **Muri GEX come Strike Operativi**.")
+    st.markdown("Genera strategie in Opzioni utilizzando **Strike ATM per l'ingresso** e **Muri GEX come Target**.")
     
     ls_col1, ls_col2 = st.columns([1, 2])
     with ls_col1:
@@ -580,18 +501,19 @@ with tab2:
 
     with ls_col2:
         if t3_spot and btn_strat:
-            with st.spinner("Analisi Volatilità e Muri GEX in corso..."):
+            with st.spinner("Analisi Volatilità e Payoff..."):
                 # Recuperiamo i dati GEX per trovare i muri
                 t3_calls, t3_puts, t3_err = get_aggregated_data(t3_sym_input, t3_spot, 6, 25)
                 
                 if not t3_err:
-                    # 1. Identificazione Muri (Pivot Points)
+                    # 1. MAPPING MURI (Logica Tab 1)
                     calls_agg = t3_calls.groupby("strike")["openInterest"].sum().reset_index()
                     puts_agg = t3_puts.groupby("strike")["openInterest"].sum().reset_index()
                     
-                    # Trova Call Wall (Strike con max OI sopra spot) e Put Wall (Strike max OI sotto spot)
+                    # Trova Call Wall e Put Wall intelligenti
                     try:
                         cw_df = calls_agg[calls_agg['strike'] > t3_spot]
+                        # Cerca il muro più vicino significativo (Smart Selection)
                         t3_cw = cw_df.sort_values("openInterest", ascending=False).iloc[0]['strike'] if not cw_df.empty else t3_spot * 1.05
                         
                         pw_df = puts_agg[puts_agg['strike'] < t3_spot]
@@ -599,64 +521,177 @@ with tab2:
                     except:
                         t3_cw, t3_pw = t3_spot*1.05, t3_spot*0.95
 
-                    # 2. Analisi Regime Volatilità (Cheap vs Expensive)
+                    # 2. VOL REGIME
                     # Stimiamo IV media ATM
                     iv_est_series = t3_calls[t3_calls['strike'].between(t3_spot*0.95, t3_spot*1.05)]['impliedVolatility']
                     iv_est = iv_est_series.mean() if not iv_est_series.empty else hv_current
                     
-                    vol_ratio = iv_est / hv_current if hv_current > 0 else 1.0
-                    if vol_ratio > 1.15: 
-                        vol_regime = "HIGH VOL"
-                        vol_desc = "Opzioni Costose (Vendere Premium)"
-                        vol_color = "#e8f5e9" # Verde chiaro
-                    else: 
-                        vol_regime = "LOW VOL"
-                        vol_desc = "Opzioni Economiche (Comprare Premium)"
-                        vol_color = "#e3f2fd" # Blu chiaro
+                    vol_regime = "HIGH VOL" if (iv_est / hv_current > 1.15) else "LOW VOL"
+
+                    # 3. DEFINIZIONE STRATEGIA (MATRICE)
+                    dte_days = 30
+                    T_years = dte_days / 365.0
+                    r_riskfree = 0.045
+                    
+                    strategy = {}
+                    
+                    if "Bull" in t3_scen_name:
+                        if vol_regime == "LOW VOL":
+                            # Debit Call Spread (Buy ATM, Sell Wall)
+                            strategy = {"name": "DEBIT CALL SPREAD", "type": "debit", "bias": "bull",
+                                        "legs": [
+                                            {"action": "buy", "type": "call", "strike": t3_spot, "desc": "ATM Entry"},
+                                            {"action": "sell", "type": "call", "strike": t3_cw, "desc": "Target GEX"}
+                                        ]}
+                        else:
+                            # Credit Put Spread (Sell Put Wall)
+                            strategy = {"name": "CREDIT PUT SPREAD", "type": "credit", "bias": "bull",
+                                        "legs": [
+                                            {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Defensa GEX"},
+                                            {"action": "buy", "type": "put", "strike": t3_pw * 0.95, "desc": "Protection"}
+                                        ]}
+
+                    elif "Bear" in t3_scen_name:
+                        if vol_regime == "LOW VOL":
+                             # Debit Put Spread (Buy ATM, Sell Wall)
+                            strategy = {"name": "DEBIT PUT SPREAD", "type": "debit", "bias": "bear",
+                                        "legs": [
+                                            {"action": "buy", "type": "put", "strike": t3_spot, "desc": "ATM Entry"},
+                                            {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Target GEX"}
+                                        ]}
+                        else:
+                            # Credit Call Spread (Sell Call Wall)
+                            strategy = {"name": "CREDIT CALL SPREAD", "type": "credit", "bias": "bear",
+                                        "legs": [
+                                            {"action": "sell", "type": "call", "strike": t3_cw, "desc": "Defense GEX"},
+                                            {"action": "buy", "type": "call", "strike": t3_cw * 1.05, "desc": "Protection"}
+                                        ]}
+
+                    elif "Neutral" in t3_scen_name:
+                         strategy = {"name": "IRON CONDOR", "type": "credit", "bias": "neutral",
+                                        "legs": [
+                                            {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Wall Low"},
+                                            {"action": "buy", "type": "put", "strike": t3_pw * 0.95, "desc": "Prot Low"},
+                                            {"action": "sell", "type": "call", "strike": t3_cw, "desc": "Wall High"},
+                                            {"action": "buy", "type": "call", "strike": t3_cw * 1.05, "desc": "Prot High"}
+                                        ]}
+                    else:
+                        # STRADDLE (Volatile) - Fix Logic: ATM Entry
+                        strategy = {"name": "LONG STRADDLE", "type": "debit", "bias": "volatile",
+                                    "legs": [
+                                        {"action": "buy", "type": "call", "strike": t3_spot, "desc": "ATM Upside"},
+                                        {"action": "buy", "type": "put", "strike": t3_spot, "desc": "ATM Downside"}
+                                    ]}
+
+                    # 4. CALCOLO PREZZI & PAYOFF
+                    net_cost = 0
+                    for leg in strategy['legs']:
+                        # Cerca prezzo reale o stima BS
+                        try:
+                            # Filtro approssimativo per trovare il prezzo nel dataframe
+                            df_opts = t3_calls if leg['type'] == 'call' else t3_puts
+                            # Trova strike più vicino
+                            nearest_idx = (df_opts['strike'] - leg['strike']).abs().idxmin()
+                            real_price = df_opts.loc[nearest_idx, 'lastPrice']
+                            if pd.isna(real_price) or real_price < 0.01: raise ValueError
+                        except:
+                            # Fallback BS
+                            real_price = bs_price(t3_spot, leg['strike'], T_years, r_riskfree, iv_est, leg['type'])
                         
-                    # 3. Generazione Strategia
-                    strat = get_option_strategy_logic(t3_scen_name, vol_regime, t3_spot, t3_cw, t3_pw)
+                        leg['price'] = real_price
+                        if leg['action'] == 'buy': net_cost += real_price
+                        else: net_cost -= real_price
                     
-                    # --- DISPLAY OUTPUT ---
-                    st.markdown(f"#### 📊 Volatility Radar: {vol_regime}")
-                    col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
-                    col_metrics1.metric("HV (Realizzata)", f"{hv_current:.1%}")
-                    col_metrics2.metric("IV (Implicita)", f"{iv_est:.1%}", delta=f"Spread: {iv_est-hv_current:.1%}", delta_color="inverse")
-                    col_metrics3.markdown(f"**Indication:**<br>{vol_desc}", unsafe_allow_html=True)
+                    # 5. GENERAZIONE GRAFICO
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    spot_range = np.linspace(t3_spot * 0.8, t3_spot * 1.2, 100)
+                    pnl_expiration = np.zeros_like(spot_range)
+                    pnl_today = np.zeros_like(spot_range)
                     
-                    st.divider()
+                    for leg in strategy['legs']:
+                        s_vals = spot_range
+                        k = leg['strike']
+                        sign = 1 if leg['action'] == 'buy' else -1
+                        price = leg['price']
+                        
+                        # Payoff Expiration
+                        if leg['type'] == 'call': pay = np.maximum(s_vals - k, 0)
+                        else: pay = np.maximum(k - s_vals, 0)
+                        pnl_expiration += sign * (pay - price)
+                        
+                        # Payoff Today (BS approximation)
+                        bs_vals = []
+                        for s in s_vals:
+                            bs_vals.append(bs_price(s, k, T_years, r_riskfree, iv_est, leg['type']))
+                        pnl_today += sign * (np.array(bs_vals) - price)
+
+                    # Plotting
+                    ax.plot(spot_range, pnl_expiration, label='Profitto a Scadenza', color='#1565C0', lw=2)
+                    ax.plot(spot_range, pnl_today, label='Profitto Oggi (T+0)', color='#FF9800', ls='--', lw=1.5)
                     
-                    # Card Strategia
-                    st.markdown(f"""
-                    <div style="background-color: white; padding: 20px; border-radius: 10px; border: 2px solid #EEE; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                        <h3 style="color: #2C3E50; margin-top:0;">{strat['name']}</h3>
-                        <p style="font-style: italic; color: #555;">"{strat['desc']}"</p>
-                        <hr>
-                        <h5 style="color: #333;">🛠️ STRUTTURA DEL TRADE (Scadenza sugg.: 30-45 DTE)</h5>
-                        <ul style="list-style-type: none; padding-left: 0; font-size: 16px;">
-                            {''.join([f"<li style='margin-bottom: 8px; padding: 8px; background-color: #F8F9F9; border-radius: 5px;'>{leg}</li>" for leg in strat['legs']])}
-                        </ul>
-                        <div style="background-color: {vol_color}; padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 5px solid #2196F3;">
-                            <b>🧠 LOGICA GEX:</b><br>
-                            {strat['logic']}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    # Reference Lines
+                    ax.axhline(0, color='black', lw=1)
+                    ax.axvline(t3_spot, color='gray', ls=':', label='Spot Price')
+                    ax.axvline(t3_cw, color='#21618C', ls='-.', label=f'Call Wall ${int(t3_cw)}')
+                    ax.axvline(t3_pw, color='#D35400', ls='-.', label=f'Put Wall ${int(t3_pw)}')
                     
-                    # Prob Cone per visualizzare i muri
-                    # Se è Bullish, il target è CW. Se Bearish, è PW.
-                    target_wall = t3_cw if "Bull" in t3_scen_name else t3_pw
-                    # Se è Laterale, mostriamo entrambi (ma la funzione plot ne accetta uno per la linea viola)
-                    # Passiamo il più vicino o il CW di default.
+                    # Formatting
+                    ax.fill_between(spot_range, 0, pnl_expiration, where=(pnl_expiration>0), color='green', alpha=0.1)
+                    ax.fill_between(spot_range, 0, pnl_expiration, where=(pnl_expiration<0), color='red', alpha=0.1)
+                    ax.set_title(f"Payoff: {strategy['name']} ({strategy['bias'].upper()})", fontweight='bold')
+                    ax.set_xlabel(f"Prezzo {t3_sym_input}")
+                    ax.set_ylabel("P&L ($)")
+                    ax.legend(loc='best')
+                    ax.grid(True, alpha=0.3)
                     
-                    fig_cone, txt_explanation = plot_probability_cone(t3_spot, iv_est, target_wall, days=30)
-                    st.pyplot(fig_cone)
-                    st.info(txt_explanation)
+                    # Calcolo BEP & PoP (Semplificato per Call/Put)
+                    # PoP basato su BSM Log-Normal distribution
+                    if net_cost > 0: # Debit Strategies
+                        bep = t3_spot + net_cost if "Call" in strategy['name'] or "Straddle" in strategy['name'] else t3_spot - net_cost
+                        # Probabilità che Spot > BEP (per Call) o < BEP (per Put)
+                        if "Call" in strategy['name']:
+                             # Prob Spot > BEP
+                             d2_bep = (np.log(t3_spot/bep) + (r_riskfree - 0.5*iv_est**2)*T_years) / (iv_est*np.sqrt(T_years))
+                             pop = norm.cdf(d2_bep)
+                        elif "Put" in strategy['name']:
+                             # Prob Spot < BEP
+                             d2_bep = (np.log(t3_spot/bep) + (r_riskfree - 0.5*iv_est**2)*T_years) / (iv_est*np.sqrt(T_years))
+                             pop = 1 - norm.cdf(d2_bep) # Or norm.cdf(-d2_bep) depending on formulation, here simple approx
+                             pop = norm.cdf(-d2_bep) # Correct direction
+                        else: pop = 0.50 # Straddle approx hard to calc simply
+                    else: # Credit Strategies
+                        pop = 0.65 # Base approx for high prob trades
+                        bep = 0
+
+                    # Display
+                    c_info, c_chart = st.columns([1, 2])
+                    with c_info:
+                        st.markdown(f"#### 📡 Strategy: {strategy['name']}")
+                        if strategy['type'] == 'debit':
+                            st.error(f"📉 Costo (Debito): ${net_cost*100:.2f}")
+                            st.caption("Rischio Massimo limitato al premio pagato.")
+                        else:
+                            st.success(f"💰 Incasso (Credito): ${abs(net_cost)*100:.2f}")
+                            st.caption("Rischio definito dagli spread.")
+                        
+                        st.markdown("---")
+                        st.write("**Struttura Leg:**")
+                        for l in strategy['legs']:
+                            icon = "🟢" if l['action'] == "buy" else "🔴"
+                            st.write(f"{icon} {l['action'].upper()} {l['type'].upper()} ${int(l['strike'])} ({l['desc']})")
+                        
+                        if vol_regime == "HIGH VOL": st.warning(f"⚠️ High Volatility ({iv_est:.1%}). Strategie Credit favorite.")
+                        else: st.info(f"✅ Low Volatility ({iv_est:.1%}). Strategie Debit favorite.")
+
+                    with c_chart:
+                        st.pyplot(fig)
+                        if strategy['type'] == 'debit' and "Straddle" not in strategy['name']:
+                            st.metric("Prob. Profitto (PoP)", f"{pop:.1%}", help="Probabilità statistica di chiudere sopra il BEP a scadenza")
                     
                 else:
-                    st.error("Dati Opzioni insufficienti per calcolare i Muri GEX.")
+                    st.error("Dati Opzioni insufficienti per calcolare la strategia.")
 
-# --- TAB 3: SQUEEZE SCANNER ---
+# --- TAB 3: SQUEEZE SCANNER (INVARIATO) ---
 with tab3:
     st.markdown("### 🔥 Gamma Squeeze & Volatility Scanner")
     default_tickers = "SPY, QQQ, NVDA, TSLA, AMD, AAPL, MSFT, AMZN, META, COIN, MSTR, AMC, PLTR"
