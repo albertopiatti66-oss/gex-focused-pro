@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-GEX Positioning v20.9.25 (Badges Update)
-- NEW: Badge "Relative Strength" (RS) vs SPY.
-- NEW: Badge "Expiry Risk" (% Gamma in scadenza venerdì).
-- LOGIC: Motore matematico e Obstacle Check (Median) invariati.
-- UPDATE: Tab 2 Strategy Lab con Grafici Payoff e Logica ATM/Muri.
+GEX Positioning v20.9.25 (Final Option Architect - Real P&L & Cone)
+- TAB 1: Dashboard GEX (Invariata).
+- TAB 2: Option Architect (UPDATED: Real $ P&L, Max Profit Calc, Probability Cone).
+- TAB 3: Squeeze Scanner (Invariata).
 """
 
 import streamlit as st
@@ -14,8 +13,7 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib import gridspec
-from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
+from matplotlib.ticker import FuncFormatter
 from scipy.stats import norm
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -30,7 +28,7 @@ if 'shared_ticker' not in st.session_state:
     st.session_state['shared_ticker'] = "NVDA"
 
 # -----------------------------------------------------------------------------
-# 1. MOTORE MATEMATICO & DATI (CORE)
+# 1. MOTORE MATEMATICO & DATI (CORE - INVARIATO)
 # -----------------------------------------------------------------------------
 
 def get_market_data(ticker):
@@ -127,7 +125,7 @@ def vectorized_bs_gamma(S, K, T, r, sigma):
         gamma = pdf / (S * sigma * np.sqrt(T))
     return np.nan_to_num(gamma)
 
-# --- NUOVA FUNZIONE HELPER PER PRICING OPZIONI (Necessaria per Tab 2) ---
+# --- FUNZIONE HELPER PER PRICING OPZIONI ---
 def bs_price(S, K, T, r, sigma, option_type="call"):
     """Calcola prezzo Black-Scholes per Call o Put."""
     try:
@@ -225,66 +223,43 @@ def find_zero_crossing(df, spot):
     except: return None
 
 # -----------------------------------------------------------------------------
-# 2. NUOVE FUNZIONI BADGES (RS & EXPIRY)
+# 2. BADGES
 # -----------------------------------------------------------------------------
 
 def get_rs_badge(ticker):
-    """Calcola la Forza Relativa (RS) vs SPY."""
     try:
         if ticker == "SPY": return ""
         df = yf.download([ticker, "SPY"], period="10d", progress=False)['Close']
         if df.empty: return ""
-        
-        # Gestione Multi-Index se scarica entrambi
         if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.droplevel(0) # Appiattisci se necessario (dipende versione yfinance)
-            
-        # Calcolo Performance
-        # Nota: yfinance a volte cambia format, usiamo il metodo più sicuro: pct_change
+            df.columns = df.columns.droplevel(0)
         perf_ticker = (df[ticker].iloc[-1] - df[ticker].iloc[0]) / df[ticker].iloc[0]
         perf_spy = (df["SPY"].iloc[-1] - df["SPY"].iloc[0]) / df["SPY"].iloc[0]
-        
         rs = perf_ticker - perf_spy
-        
-        if rs > 0.01: # +1% vs SPY
-            return f"<span style='background-color:#E8F5E9; color:#2E8B57; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #2E8B57; font-size:12px;'>🚀 LEADER (RS +{rs*100:.1f}%)</span>"
-        elif rs < -0.01: # -1% vs SPY
-            return f"<span style='background-color:#FFEBEE; color:#C0392B; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #C0392B; font-size:12px;'>🐢 LAGGARD (RS {rs*100:.1f}%)</span>"
-        else:
-            return f"<span style='background-color:#F5F5F5; color:#555; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #CCC; font-size:12px;'>⚖️ IN LINE (RS {rs*100:.1f}%)</span>"
-    except:
-        return ""
+        if rs > 0.01: return f"<span style='background-color:#E8F5E9; color:#2E8B57; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #2E8B57; font-size:12px;'>🚀 LEADER (RS +{rs*100:.1f}%)</span>"
+        elif rs < -0.01: return f"<span style='background-color:#FFEBEE; color:#C0392B; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #C0392B; font-size:12px;'>🐢 LAGGARD (RS {rs*100:.1f}%)</span>"
+        else: return f"<span style='background-color:#F5F5F5; color:#555; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #CCC; font-size:12px;'>⚖️ IN LINE (RS {rs*100:.1f}%)</span>"
+    except: return ""
 
 def get_expiry_badge(calls, puts, total_gex):
-    """Calcola quanto Gamma scade entro questo Venerdì."""
     try:
         today = datetime.now().date()
-        # Trova prossimo venerdì
         days_ahead = 4 - today.weekday()
         if days_ahead < 0: days_ahead += 7
         next_friday = today + timedelta(days=days_ahead)
         next_friday_str = next_friday.strftime('%Y-%m-%d')
-        
-        # Filtra GEX in scadenza
         c_exp = calls[calls['expiry'] <= next_friday_str]['GEX'].abs().sum()
         p_exp = puts[puts['expiry'] <= next_friday_str]['GEX'].abs().sum()
-        
         expiring_gex = c_exp + p_exp
         total_abs_gex = calls['GEX'].abs().sum() + puts['GEX'].abs().sum()
-        
         if total_abs_gex == 0: return ""
-        
         ratio = expiring_gex / total_abs_gex
-        
-        if ratio > 0.35: # >35% scade questa settimana
-            return f"<span style='background-color:#FFF3E0; color:#EF6C00; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #EF6C00; font-size:12px;'>⚠️ EXPIRY RISK: {ratio:.0%} scade Ven.</span>"
-        else:
-            return f"<span style='background-color:#E3F2FD; color:#1565C0; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #1565C0; font-size:12px;'>🔒 SOLID: Solo {ratio:.0%} scade Ven.</span>"
-    except:
-        return ""
+        if ratio > 0.35: return f"<span style='background-color:#FFF3E0; color:#EF6C00; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #EF6C00; font-size:12px;'>⚠️ EXPIRY RISK: {ratio:.0%} scade Ven.</span>"
+        else: return f"<span style='background-color:#E3F2FD; color:#1565C0; padding:4px 8px; border-radius:5px; font-weight:bold; border: 1px solid #1565C0; font-size:12px;'>🔒 SOLID: Solo {ratio:.0%} scade Ven.</span>"
+    except: return ""
 
 # -----------------------------------------------------------------------------
-# 3. FUNZIONI GRAFICHE & REPORT
+# 3. REPORT TAB 1 (Invariato)
 # -----------------------------------------------------------------------------
 
 def get_analysis_content(spot, data, cw_val, pw_val, synced_flip, scenario_name):
@@ -467,7 +442,7 @@ with tab1:
                     buf = BytesIO(); fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
                     st.download_button("💾 Scarica Report", buf.getvalue(), f"GEX_{sym}.png", "image/png", use_container_width=True)
 
-# --- TAB 2: OPTION ARCHITECT (RISCRITTO CON LOGICA CORRETTA) ---
+# --- TAB 2: OPTION ARCHITECT (UPDATED) ---
 with tab2:
     st.markdown("### 🧪 GEX Option Architect")
     st.markdown("Genera strategie in Opzioni utilizzando **Strike ATM per l'ingresso** e **Muri GEX come Target**.")
@@ -480,52 +455,39 @@ with tab2:
         t3_spot, t3_adv, t3_hist = get_market_data(t3_sym_input)
         
         if t3_spot:
-            # Calcolo HV e IV Context
             t3_hist['LogRet'] = np.log(t3_hist['Close'] / t3_hist['Close'].shift(1))
             hv_current = t3_hist['LogRet'].tail(20).std() * np.sqrt(252)
-            
             st.metric("Spot Price", f"${t3_spot:.2f}")
-            
-            # Badge RS
             rs_html_t2 = get_rs_badge(t3_sym_input)
             if rs_html_t2: st.markdown(rs_html_t2, unsafe_allow_html=True)
-            
             t3_earn = check_earnings_risk(t3_sym_input)
             if t3_earn: st.error(t3_earn)
-            
             t3_scen_tuple = suggest_market_context(t3_hist)
             t3_scen_name = t3_scen_tuple[0]
             st.info(f"AI Context: {t3_scen_name}")
-            
             btn_strat = st.button("🛠️ Genera Strategia Opzioni", type="primary")
 
     with ls_col2:
         if t3_spot and btn_strat:
             with st.spinner("Analisi Volatilità e Payoff..."):
-                # Recuperiamo i dati GEX per trovare i muri
                 t3_calls, t3_puts, t3_err = get_aggregated_data(t3_sym_input, t3_spot, 6, 25)
                 
                 if not t3_err:
                     # 1. MAPPING MURI (Logica Tab 1)
                     calls_agg = t3_calls.groupby("strike")["openInterest"].sum().reset_index()
                     puts_agg = t3_puts.groupby("strike")["openInterest"].sum().reset_index()
-                    
-                    # Trova Call Wall e Put Wall intelligenti
                     try:
                         cw_df = calls_agg[calls_agg['strike'] > t3_spot]
                         # Cerca il muro più vicino significativo (Smart Selection)
                         t3_cw = cw_df.sort_values("openInterest", ascending=False).iloc[0]['strike'] if not cw_df.empty else t3_spot * 1.05
-                        
                         pw_df = puts_agg[puts_agg['strike'] < t3_spot]
                         t3_pw = pw_df.sort_values("openInterest", ascending=False).iloc[0]['strike'] if not pw_df.empty else t3_spot * 0.95
                     except:
                         t3_cw, t3_pw = t3_spot*1.05, t3_spot*0.95
 
                     # 2. VOL REGIME
-                    # Stimiamo IV media ATM
                     iv_est_series = t3_calls[t3_calls['strike'].between(t3_spot*0.95, t3_spot*1.05)]['impliedVolatility']
                     iv_est = iv_est_series.mean() if not iv_est_series.empty else hv_current
-                    
                     vol_regime = "HIGH VOL" if (iv_est / hv_current > 1.15) else "LOW VOL"
 
                     # 3. DEFINIZIONE STRATEGIA (MATRICE)
@@ -537,36 +499,30 @@ with tab2:
                     
                     if "Bull" in t3_scen_name:
                         if vol_regime == "LOW VOL":
-                            # Debit Call Spread (Buy ATM, Sell Wall)
                             strategy = {"name": "DEBIT CALL SPREAD", "type": "debit", "bias": "bull",
                                         "legs": [
                                             {"action": "buy", "type": "call", "strike": t3_spot, "desc": "ATM Entry"},
                                             {"action": "sell", "type": "call", "strike": t3_cw, "desc": "Target GEX"}
                                         ]}
                         else:
-                            # Credit Put Spread (Sell Put Wall)
                             strategy = {"name": "CREDIT PUT SPREAD", "type": "credit", "bias": "bull",
                                         "legs": [
                                             {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Defensa GEX"},
                                             {"action": "buy", "type": "put", "strike": t3_pw * 0.95, "desc": "Protection"}
                                         ]}
-
                     elif "Bear" in t3_scen_name:
                         if vol_regime == "LOW VOL":
-                             # Debit Put Spread (Buy ATM, Sell Wall)
                             strategy = {"name": "DEBIT PUT SPREAD", "type": "debit", "bias": "bear",
                                         "legs": [
                                             {"action": "buy", "type": "put", "strike": t3_spot, "desc": "ATM Entry"},
                                             {"action": "sell", "type": "put", "strike": t3_pw, "desc": "Target GEX"}
                                         ]}
                         else:
-                            # Credit Call Spread (Sell Call Wall)
                             strategy = {"name": "CREDIT CALL SPREAD", "type": "credit", "bias": "bear",
                                         "legs": [
                                             {"action": "sell", "type": "call", "strike": t3_cw, "desc": "Defense GEX"},
                                             {"action": "buy", "type": "call", "strike": t3_cw * 1.05, "desc": "Protection"}
                                         ]}
-
                     elif "Neutral" in t3_scen_name:
                          strategy = {"name": "IRON CONDOR", "type": "credit", "bias": "neutral",
                                         "legs": [
@@ -576,7 +532,6 @@ with tab2:
                                             {"action": "buy", "type": "call", "strike": t3_cw * 1.05, "desc": "Prot High"}
                                         ]}
                     else:
-                        # STRADDLE (Volatile) - Fix Logic: ATM Entry
                         strategy = {"name": "LONG STRADDLE", "type": "debit", "bias": "volatile",
                                     "legs": [
                                         {"action": "buy", "type": "call", "strike": t3_spot, "desc": "ATM Upside"},
@@ -586,23 +541,27 @@ with tab2:
                     # 4. CALCOLO PREZZI & PAYOFF
                     net_cost = 0
                     for leg in strategy['legs']:
-                        # Cerca prezzo reale o stima BS
                         try:
-                            # Filtro approssimativo per trovare il prezzo nel dataframe
                             df_opts = t3_calls if leg['type'] == 'call' else t3_puts
-                            # Trova strike più vicino
                             nearest_idx = (df_opts['strike'] - leg['strike']).abs().idxmin()
                             real_price = df_opts.loc[nearest_idx, 'lastPrice']
                             if pd.isna(real_price) or real_price < 0.01: raise ValueError
                         except:
-                            # Fallback BS
                             real_price = bs_price(t3_spot, leg['strike'], T_years, r_riskfree, iv_est, leg['type'])
                         
                         leg['price'] = real_price
                         if leg['action'] == 'buy': net_cost += real_price
                         else: net_cost -= real_price
                     
-                    # 5. GENERAZIONE GRAFICO
+                    # 5. MAX PROFIT CALC
+                    max_profit = 0.0
+                    if strategy['name'] in ["DEBIT CALL SPREAD", "DEBIT PUT SPREAD"]:
+                         width = abs(strategy['legs'][0]['strike'] - strategy['legs'][1]['strike'])
+                         max_profit = (width - net_cost) * 100
+                    elif strategy['type'] == 'credit':
+                         max_profit = abs(net_cost) * 100
+                    
+                    # 6. GENERAZIONE GRAFICO (SCALATO PER 100)
                     fig, ax = plt.subplots(figsize=(10, 6))
                     spot_range = np.linspace(t3_spot * 0.8, t3_spot * 1.2, 100)
                     pnl_expiration = np.zeros_like(spot_range)
@@ -614,64 +573,45 @@ with tab2:
                         sign = 1 if leg['action'] == 'buy' else -1
                         price = leg['price']
                         
-                        # Payoff Expiration
                         if leg['type'] == 'call': pay = np.maximum(s_vals - k, 0)
                         else: pay = np.maximum(k - s_vals, 0)
-                        pnl_expiration += sign * (pay - price)
+                        # SCALING x100
+                        pnl_expiration += sign * (pay - price) * 100
                         
-                        # Payoff Today (BS approximation)
                         bs_vals = []
                         for s in s_vals:
                             bs_vals.append(bs_price(s, k, T_years, r_riskfree, iv_est, leg['type']))
-                        pnl_today += sign * (np.array(bs_vals) - price)
+                        # SCALING x100
+                        pnl_today += sign * (np.array(bs_vals) - price) * 100
 
-                    # Plotting
                     ax.plot(spot_range, pnl_expiration, label='Profitto a Scadenza', color='#1565C0', lw=2)
                     ax.plot(spot_range, pnl_today, label='Profitto Oggi (T+0)', color='#FF9800', ls='--', lw=1.5)
                     
-                    # Reference Lines
                     ax.axhline(0, color='black', lw=1)
                     ax.axvline(t3_spot, color='gray', ls=':', label='Spot Price')
                     ax.axvline(t3_cw, color='#21618C', ls='-.', label=f'Call Wall ${int(t3_cw)}')
                     ax.axvline(t3_pw, color='#D35400', ls='-.', label=f'Put Wall ${int(t3_pw)}')
                     
-                    # Formatting
                     ax.fill_between(spot_range, 0, pnl_expiration, where=(pnl_expiration>0), color='green', alpha=0.1)
                     ax.fill_between(spot_range, 0, pnl_expiration, where=(pnl_expiration<0), color='red', alpha=0.1)
                     ax.set_title(f"Payoff: {strategy['name']} ({strategy['bias'].upper()})", fontweight='bold')
                     ax.set_xlabel(f"Prezzo {t3_sym_input}")
-                    ax.set_ylabel("P&L ($)")
+                    ax.set_ylabel("P&L ($)") # Changed Label
                     ax.legend(loc='best')
                     ax.grid(True, alpha=0.3)
-                    
-                    # Calcolo BEP & PoP (Semplificato per Call/Put)
-                    # PoP basato su BSM Log-Normal distribution
-                    if net_cost > 0: # Debit Strategies
-                        bep = t3_spot + net_cost if "Call" in strategy['name'] or "Straddle" in strategy['name'] else t3_spot - net_cost
-                        # Probabilità che Spot > BEP (per Call) o < BEP (per Put)
-                        if "Call" in strategy['name']:
-                             # Prob Spot > BEP
-                             d2_bep = (np.log(t3_spot/bep) + (r_riskfree - 0.5*iv_est**2)*T_years) / (iv_est*np.sqrt(T_years))
-                             pop = norm.cdf(d2_bep)
-                        elif "Put" in strategy['name']:
-                             # Prob Spot < BEP
-                             d2_bep = (np.log(t3_spot/bep) + (r_riskfree - 0.5*iv_est**2)*T_years) / (iv_est*np.sqrt(T_years))
-                             pop = 1 - norm.cdf(d2_bep) # Or norm.cdf(-d2_bep) depending on formulation, here simple approx
-                             pop = norm.cdf(-d2_bep) # Correct direction
-                        else: pop = 0.50 # Straddle approx hard to calc simply
-                    else: # Credit Strategies
-                        pop = 0.65 # Base approx for high prob trades
-                        bep = 0
 
                     # Display
                     c_info, c_chart = st.columns([1, 2])
                     with c_info:
                         st.markdown(f"#### 📡 Strategy: {strategy['name']}")
                         if strategy['type'] == 'debit':
-                            st.error(f"📉 Costo (Debito): ${net_cost*100:.2f}")
-                            st.caption("Rischio Massimo limitato al premio pagato.")
+                            st.error(f"📉 Costo (Rischio): ${net_cost*100:.2f}")
+                            if max_profit > 0:
+                                st.success(f"🎯 Max Profit: ${max_profit:.2f}")
+                            else:
+                                st.info("Profitto Illimitato (Explosive)")
                         else:
-                            st.success(f"💰 Incasso (Credito): ${abs(net_cost)*100:.2f}")
+                            st.success(f"💰 Incasso (Max Profit): ${abs(net_cost)*100:.2f}")
                             st.caption("Rischio definito dagli spread.")
                         
                         st.markdown("---")
@@ -685,8 +625,14 @@ with tab2:
 
                     with c_chart:
                         st.pyplot(fig)
-                        if strategy['type'] == 'debit' and "Straddle" not in strategy['name']:
-                            st.metric("Prob. Profitto (PoP)", f"{pop:.1%}", help="Probabilità statistica di chiudere sopra il BEP a scadenza")
+                        
+                        # CONE INTEGRATION
+                        st.markdown("##### 🎲 Probability Cone (Target Analysis)")
+                        target_cone = t3_cw if "Bull" in strategy['bias'] or "Volatile" in strategy['bias'] else t3_pw
+                        if strategy['bias'] == "neutral": target_cone = t3_cw # Upper bound
+                        fig_cone, txt_cone = plot_probability_cone(t3_spot, iv_est, target_cone, days=30)
+                        st.pyplot(fig_cone)
+                        st.info(txt_cone)
                     
                 else:
                     st.error("Dati Opzioni insufficienti per calcolare la strategia.")
