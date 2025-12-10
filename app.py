@@ -478,7 +478,19 @@ with tab2:
                 iv_est = t2_calls[t2_calls['strike'].between(t2_spot*0.95, t2_spot*1.05)]['impliedVolatility'].mean()
                 if pd.isna(iv_est): iv_est = hv_current
                 
-                bias_bull = "Bull" in t2_scen[0]
+                # --- INTELLIGENT BIAS SELECTOR ---
+                # Calcoliamo la SMA20 per il trend di breve
+                sma20 = t2_hist['Close'].tail(20).mean()
+                
+                # Se l'AI è incerta (Volatile/Neutral), usiamo la SMA20 come giudice
+                if "Bull" in t2_scen[0]:
+                    bias_bull = True
+                elif "Bear" in t2_scen[0]:
+                    bias_bull = False
+                else:
+                    # Se Volatile/Neutral, andiamo Long se sopra media, Short se sotto
+                    bias_bull = t2_spot > sma20
+                # ---------------------------------
                 if bias_bull:
                     entry = t2_spot; stop = t2_pw * 0.99; target = t2_cw * 0.99; setup_title = "🐂 BULLISH SETUP"; col_setup = "#e3f2fd"
                 else:
